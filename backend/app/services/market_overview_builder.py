@@ -325,6 +325,11 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
             "avg_pct": sum(changes) / len(changes),
             "up_count": sum(1 for v in changes if v > 0),
             "down_count": sum(1 for v in changes if v < 0),
+            "limit_up_count": sum(
+                1 for s in stocks
+                if bool(s.get("signal_limit_up")) or (_finite(s.get("consecutive_limit_ups")) or 0) > 0
+            ),
+            "limit_down_count": sum(1 for s in stocks if bool(s.get("signal_limit_down"))),
             "amount": sum(_finite(s.get("amount")) or 0 for s in stocks),
             "source_field": group_source.get(name),
             "leader": {

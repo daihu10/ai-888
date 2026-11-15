@@ -59,6 +59,8 @@ interface ConceptStat {
   medianPct: number | null
   upCount: number
   downCount: number
+  limitUpCount: number
+  limitDownCount: number
   flatCount: number
   upRate: number
   strongCount: number
@@ -194,6 +196,8 @@ function calcConceptStat(group: DimensionGroup, marketMap: Map<string, MarketSna
   const totalAmount = stocks.reduce((sum, s) => sum + (num(s.amount) ?? 0), 0)
   const upCount = pctValues.filter(v => v > 0).length
   const downCount = pctValues.filter(v => v < 0).length
+  const limitUpCount = stocks.filter(s => s.signal_limit_up === true || (num(s.consecutive_limit_ups) ?? 0) > 0).length
+  const limitDownCount = stocks.filter(s => s.signal_limit_down === true).length
   const flatCount = Math.max(0, stocks.length - upCount - downCount)
   const strongCount = pctValues.filter(v => v >= 0.05).length
   const weakCount = pctValues.filter(v => v <= -0.05).length
@@ -218,6 +222,8 @@ function calcConceptStat(group: DimensionGroup, marketMap: Map<string, MarketSna
     medianPct,
     upCount,
     downCount,
+    limitUpCount,
+    limitDownCount,
     flatCount,
     upRate,
     strongCount,
@@ -637,6 +643,8 @@ function PulseList({
                           <span className="mx-0.5 text-muted/40">/</span>
                           <span className="text-bear">{item.downCount}</span>跌
                         </span>
+                        <span className="shrink-0 text-[9px] text-bull">涨停 {item.limitUpCount}</span>
+                        <span className="shrink-0 text-[9px] text-bear">跌停 {item.limitDownCount}</span>
                         <span className={cn('ml-auto shrink-0 font-mono text-[10px] tabular-nums', priceColorClass(item.avgPct))}>{item.avgPct != null ? fmtPct(item.avgPct) : '—'}</span>
                       </div>
                     </div>
@@ -720,6 +728,8 @@ function ConceptRail({
                 <span>{item.count}只</span>
                 <span className="text-bull">{item.upCount}涨</span>
                 <span className="text-bear">{item.downCount}跌</span>
+                <span className="text-bull">涨停 {item.limitUpCount}</span>
+                <span className="text-bear">跌停 {item.limitDownCount}</span>
                 <span className="ml-auto">强度 {item.heatScore.toFixed(0)}</span>
               </div>
             </button>
@@ -748,6 +758,8 @@ function ConceptFocus({ stat, onStockClick, activeSymbol }: { stat: ConceptStat 
               <span>{stat.count} 只成分</span>
               <span className={priceColorClass(stat.avgPct)}>平均 {stat.avgPct != null ? fmtPct(stat.avgPct) : '—'}</span>
               <span>上涨占比 {(stat.upRate * 100).toFixed(0)}%</span>
+              <span className="text-bull">涨停 {stat.limitUpCount}</span>
+              <span className="text-bear">跌停 {stat.limitDownCount}</span>
               <span>成交额 {fmtBigNum(stat.totalAmount)}</span>
               {stat.avgTurnover != null && <span>均换手 {stat.avgTurnover.toFixed(2)}%</span>}
             </div>

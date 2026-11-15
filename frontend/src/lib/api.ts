@@ -508,6 +508,8 @@ export interface MarketSnapshotRow {
   market_cap?: number | null
   float_market_cap?: number | null
   consecutive_limit_ups?: number | null
+  signal_limit_up?: boolean | null
+  signal_limit_down?: boolean | null
   [key: string]: any
 }
 
@@ -517,6 +519,8 @@ export interface OverviewDimensionRankItem {
   avg_pct: number
   up_count: number
   down_count: number
+  limit_up_count?: number
+  limit_down_count?: number
   amount: number
   /** 该维度组首个命中的扩展字段 "configId.field" (成分股弹窗直连; 无扩展源时缺失) */
   source_field?: string | null

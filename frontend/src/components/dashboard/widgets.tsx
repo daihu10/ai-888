@@ -290,9 +290,11 @@ export function RankColumn({ title, rows, tone, onStockClick, onDimensionClick, 
         >
           <span className="text-center font-mono text-[9px] text-muted">{idx + 1}</span>
           <div className="min-w-0">
-            <div className="truncate text-[11px] text-foreground" title={r.name}>
-              {r.name}
-              {clickable && <span className="ml-1 text-[8px] text-muted/50">↗</span>}
+            <div className="flex min-w-0 items-center gap-1 text-[11px]" title={r.name}>
+              <span className="min-w-0 truncate text-foreground">{r.name}</span>
+              {clickable && <span className="shrink-0 text-[8px] text-muted/50">↗</span>}
+              <span className="shrink-0 text-[9px] text-bull">涨停 {r.limit_up_count ?? 0}</span>
+              <span className="shrink-0 text-[9px] text-bear">跌停 {r.limit_down_count ?? 0}</span>
             </div>
             <div className="mt-0.5 flex items-center gap-1">
               <span className="shrink-0 font-mono text-[9px] text-muted">{r.count}只</span>
