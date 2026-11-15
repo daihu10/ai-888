@@ -555,8 +555,8 @@ export function Regime() {
         { name: '趋势', type: 'line', itemStyle: { color: '#3b82f6' }, data: trend, smooth: true, symbol: 'none', yAxisIndex: 0,
           lineStyle: { ...subLineStyle, color: '#3b82f6' }, z: 2 },
         // 综合分主线 + 状态背景色带 + 阈值横虚线
-        { name: '综合分', type: 'line', data: scores, smooth: true, symbol: 'none', yAxisIndex: 0,
-          itemStyle: { color: ct.textStrong }, lineStyle: { width: 2.2, color: ct.textStrong }, areaStyle: { color: ct.textStrong, opacity: 0.035 }, z: 3,
+        { name: '综合分', type: 'line', data: scores, smooth: false, symbol: 'rect', showSymbol: true, symbolSize: 6, yAxisIndex: 0,
+          itemStyle: { color: '#ef4444' }, lineStyle: { width: 2.2, color: '#ef4444' }, areaStyle: { color: ct.textStrong, opacity: 0.035 }, z: 3,
           markArea: { silent: true, data: stateBands },
           markLine: {
             silent: true,

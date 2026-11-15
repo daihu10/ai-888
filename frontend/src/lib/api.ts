@@ -3685,6 +3685,8 @@ export const api = {
     ),
   marketSnapshot: () =>
     request<{ as_of: string | null; rows: MarketSnapshotRow[] }>('/api/screener/market-snapshot'),
+  marketSnapshotByDate: (asOf: string) =>
+    request<{ as_of: string | null; rows: MarketSnapshotRow[] }>(`/api/screener/market-snapshot?as_of=${asOf}`),
   overviewMarket: (asOf?: string) => request<OverviewMarket>(`/api/overview/market${asOf ? `?as_of=${asOf}` : ''}`),
 
   // 概念涨幅轮动矩阵: 每列(日期)各自把所有概念按当天涨幅从高到低排序

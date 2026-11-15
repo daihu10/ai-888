@@ -13,6 +13,7 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { DatePicker } from '@/components/DatePicker'
 import { EmptyState } from '@/components/EmptyState'
 import { AnalysisConfigDialog, DimensionHeatmap, PresetFetchState, type AnalysisFieldConfig } from '@/components/analysis-shared'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
@@ -25,6 +26,7 @@ import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
+import { useDataStatus } from '@/lib/useSharedQueries'
 
 const KEYWORDS = ['industry', '行业', 'sector', '申万', '中信']
 const CANDIDATE_FIELDS = ['industry', '行业', 'sector', '申万', '中信', '行业名称', 'industry_name', 'sector_name']
@@ -278,6 +280,7 @@ function groupByIndustryLevel(groups: DimensionGroup[], level: IndustryLevel): D
 // ===== 主页面 =====
 
 export function IndustryAnalysis() {
+  const [selectedDate, setSelectedDate] = useState<string | undefined>()
   const [fieldConfig, setFieldConfig] = useState<AnalysisFieldConfig>(loadConfig)
   const [showConfig, setShowConfig] = useState(false)
   const [search, setSearch] = useState('')
@@ -292,6 +295,9 @@ export function IndustryAnalysis() {
     setPreviewNavList(navList ?? [])
   }, [])
   const [showRps, setShowRps] = useState(false)
+  const dataStatus = useDataStatus({ staleTime: 60_000 })
+  const latestDate = dataStatus.data?.enriched?.latest_date ?? undefined
+  const earliestDate = dataStatus.data?.enriched?.earliest_date ?? undefined
 
   const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList })
   const availableConfigs = configsQuery.data?.items ?? []
@@ -303,8 +309,8 @@ export function IndustryAnalysis() {
   const activeConfig = availableConfigs.find(c => c.id === activeConfigId)
 
   const rowsQuery = useQuery({
-    queryKey: QK.extDataRows(activeConfigId, undefined, PAGE_LIMIT),
-    queryFn: () => api.extDataRows(activeConfigId, { limit: PAGE_LIMIT }),
+    queryKey: QK.extDataRows(activeConfigId, selectedDate, PAGE_LIMIT),
+    queryFn: () => api.extDataRows(activeConfigId, { date: selectedDate, limit: PAGE_LIMIT }),
     enabled: !!activeConfigId,
   })
 
@@ -321,15 +327,20 @@ export function IndustryAnalysis() {
   // 是否处于「内置行业预设存在但无数据」状态 → 显示获取按钮
   const needsIndustryFetch =
     !!activeConfig && activeConfig.id === PRESET_INDUSTRY_ID &&
+    (!selectedDate || !latestDate || selectedDate >= latestDate) &&
     !rowsQuery.isLoading && (rowsQuery.data?.total ?? 0) === 0
 
   const marketQuery = useQuery({
-    queryKey: QK.marketSnapshot,
-    queryFn: api.marketSnapshot,
+    queryKey: [...QK.marketSnapshot, selectedDate],
+    queryFn: () => selectedDate ? api.marketSnapshotByDate(selectedDate) : api.marketSnapshot(),
     staleTime: 60_000,
   })
 
-  const marketMap = useMemo(() => buildMarketMap(marketQuery.data?.rows ?? []), [marketQuery.data?.rows])
+  const marketDateMismatch = !!selectedDate && !!marketQuery.data && marketQuery.data.as_of !== selectedDate
+  const marketMap = useMemo(
+    () => buildMarketMap(marketDateMismatch ? [] : marketQuery.data?.rows ?? []),
+    [marketDateMismatch, marketQuery.data?.rows],
+  )
   const resolved = useMemo(
     () => resolveDimension(rowsQuery.data, activeConfig, fieldConfig.dimensionField ? [fieldConfig.dimensionField, ...CANDIDATE_FIELDS] : CANDIDATE_FIELDS),
     [rowsQuery.data, activeConfig, fieldConfig.dimensionField],
@@ -381,6 +392,8 @@ export function IndustryAnalysis() {
     }
     return map
   }, [marketMap])
+  const currentDate = selectedDate ?? marketQuery.data?.as_of ?? rowsQuery.data?.date ?? latestDate ?? ''
+  const isHistoricalDate = !!selectedDate && !!latestDate && selectedDate < latestDate
 
   const handleSaveConfig = (c: AnalysisFieldConfig) => {
     setFieldConfig(c)
@@ -426,9 +439,18 @@ export function IndustryAnalysis() {
     <>
       <PageHeader
         title="行业板块"
-        subtitle={`${industryLevelLabel} · ${marketQuery.data?.as_of ?? rowsQuery.data?.date ?? '最新'} · ${stats.length} 个行业 · ${totalSymbols} 只标的`}
+        subtitle={`${industryLevelLabel} · ${currentDate || '最新'} · ${stats.length} 个行业 · ${totalSymbols} 只标的`}
         right={
           <div className="flex items-center gap-1">
+            {currentDate && (
+              <DatePicker
+                value={currentDate}
+                onChange={setSelectedDate}
+                min={earliestDate}
+                max={latestDate ?? marketQuery.data?.as_of ?? undefined}
+                className="mr-1"
+              />
+            )}
             {/* RPS 轮动: 打开行业涨幅轮动矩阵对话框 */}
             <button
               onClick={() => setShowRps(true)}
@@ -454,7 +476,16 @@ export function IndustryAnalysis() {
 
       <div className="min-h-full bg-[radial-gradient(circle_at_12%_0%,rgba(245,158,11,0.12),transparent_28%),radial-gradient(circle_at_85%_8%,rgba(244,63,94,0.08),transparent_28%)] px-6 py-5">
         <div className="mx-auto max-w-[1440px] space-y-5">
-          <SectorRotationCard kind="industry" />
+          {marketDateMismatch && (
+            <div role="status" className="text-right text-[11px] text-warning">
+              行情接口返回日期与所选日期不一致，已隐藏未对齐的行情统计
+            </div>
+          )}
+          {isHistoricalDate ? (
+            <div className="text-right text-[11px] text-muted">行业涨幅轮动仅展示最新交易日</div>
+          ) : (
+            <SectorRotationCard kind="industry" />
+          )}
 
           <HeroPanel leading={leading[0]} falling={falling[0]} activeIndustry={activeIndustry} industryBreadth={industryBreadth} />
 

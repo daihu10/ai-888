@@ -13,6 +13,7 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { DatePicker } from '@/components/DatePicker'
 import { EmptyState } from '@/components/EmptyState'
 import { AnalysisConfigDialog, PresetFetchState, type AnalysisFieldConfig } from '@/components/analysis-shared'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
@@ -25,6 +26,7 @@ import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
+import { useDataStatus } from '@/lib/useSharedQueries'
 
 const KEYWORDS = ['concept', '概念', 'theme', '题材', '板块']
 const CANDIDATE_FIELDS = ['concept', '概念', 'theme', '题材', '板块', 'concept_name', '概念名称']
@@ -243,6 +245,7 @@ function statSort(mode: SortMode) {
 }
 
 export function ConceptAnalysis() {
+  const [selectedDate, setSelectedDate] = useState<string | undefined>()
   const [fieldConfig, setFieldConfig] = useState<AnalysisFieldConfig>(loadConfig)
   const [showConfig, setShowConfig] = useState(false)
   const [search, setSearch] = useState('')
@@ -257,6 +260,9 @@ export function ConceptAnalysis() {
     setPreviewNavList(navList ?? [])
   }, [])
   const [showRps, setShowRps] = useState(false)
+  const dataStatus = useDataStatus({ staleTime: 60_000 })
+  const latestDate = dataStatus.data?.enriched?.latest_date ?? undefined
+  const earliestDate = dataStatus.data?.enriched?.earliest_date ?? undefined
 
   const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList })
   const availableConfigs = configsQuery.data?.items ?? []
@@ -286,15 +292,20 @@ export function ConceptAnalysis() {
   // 是否处于「内置概念预设存在但无数据」状态 → 显示获取按钮
   const needsConceptFetch =
     !!activeConfig && activeConfig.id === PRESET_CONCEPT_ID &&
+    (!selectedDate || !latestDate || selectedDate >= latestDate) &&
     !rowsQuery.isLoading && (rowsQuery.data?.total ?? 0) === 0
 
   const marketQuery = useQuery({
-    queryKey: QK.marketSnapshot,
-    queryFn: api.marketSnapshot,
+    queryKey: [...QK.marketSnapshot, selectedDate],
+    queryFn: () => selectedDate ? api.marketSnapshotByDate(selectedDate) : api.marketSnapshot(),
     staleTime: 60_000,
   })
 
-  const marketMap = useMemo(() => buildMarketMap(marketQuery.data?.rows ?? []), [marketQuery.data?.rows])
+  const marketDateMismatch = !!selectedDate && !!marketQuery.data && marketQuery.data.as_of !== selectedDate
+  const marketMap = useMemo(
+    () => buildMarketMap(marketDateMismatch ? [] : marketQuery.data?.rows ?? []),
+    [marketDateMismatch, marketQuery.data?.rows],
+  )
   const resolved = useMemo(
     () => resolveDimension(rowsQuery.data, activeConfig, fieldConfig.dimensionField ? [fieldConfig.dimensionField, ...CANDIDATE_FIELDS] : CANDIDATE_FIELDS),
     [rowsQuery.data, activeConfig, fieldConfig.dimensionField],
@@ -330,6 +341,8 @@ export function ConceptAnalysis() {
     stats.forEach(s => s.stocks.forEach(st => { if (st.symbol) set.add(st.symbol) }))
     return set.size
   }, [stats])
+  const currentDate = selectedDate ?? marketQuery.data?.as_of ?? rowsQuery.data?.date ?? latestDate ?? ''
+  const isHistoricalDate = !!selectedDate && !!latestDate && selectedDate < latestDate
 
   const handleSaveConfig = (c: AnalysisFieldConfig) => {
     setFieldConfig(c)
@@ -373,9 +386,18 @@ export function ConceptAnalysis() {
     <>
       <PageHeader
         title="概念板块"
-        subtitle={`${marketQuery.data?.as_of ?? rowsQuery.data?.date ?? '最新'} · ${stats.length} 个概念 · ${totalSymbols} 只标的`}
+        subtitle={`${currentDate || '最新'} · ${stats.length} 个概念 · ${totalSymbols} 只标的`}
         right={
           <div className="flex items-center gap-1">
+            {currentDate && (
+              <DatePicker
+                value={currentDate}
+                onChange={setSelectedDate}
+                min={earliestDate}
+                max={latestDate ?? marketQuery.data?.as_of ?? undefined}
+                className="mr-1"
+              />
+            )}
             {/* RPS 轮动: 打开涨幅轮动矩阵对话框 */}
             <button
               onClick={() => setShowRps(true)}
@@ -401,7 +423,16 @@ export function ConceptAnalysis() {
 
       <div className="min-h-full bg-[radial-gradient(circle_at_12%_0%,rgba(59,130,246,0.12),transparent_28%),radial-gradient(circle_at_85%_8%,rgba(244,63,94,0.08),transparent_28%)] px-6 py-5">
         <div className="mx-auto max-w-[1440px] space-y-5">
-          <SectorRotationCard kind="concept" />
+          {marketDateMismatch && (
+            <div role="status" className="text-right text-[11px] text-warning">
+              行情接口返回日期与所选日期不一致，已隐藏未对齐的行情统计
+            </div>
+          )}
+          {isHistoricalDate ? (
+            <div className="text-right text-[11px] text-muted">概念涨幅轮动仅展示最新交易日</div>
+          ) : (
+            <SectorRotationCard kind="concept" />
+          )}
 
           <HeroPanel leading={leading[0]} falling={falling[0]} activeConcept={activeConcept} conceptBreadth={conceptBreadth} />
 
