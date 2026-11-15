@@ -6,9 +6,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Dashboard } from './Dashboard'
 import { api, type DataStatus } from '@/lib/api'
+import { QK } from '@/lib/queryKeys'
 
 vi.mock('@/lib/api', () => ({ api: {
   dataStatus: vi.fn(),
+  quoteStatus: vi.fn(),
   overviewMarket: vi.fn(async () => ({ emotion: { score: 50, label: '中性' } })),
   dataSources: vi.fn(async () => ({})),
   settings: vi.fn(async () => ({ onboarding_completed: true })),
@@ -17,6 +19,7 @@ vi.mock('@/lib/api', () => ({ api: {
   pipelineJobs: vi.fn(async () => ({ active_id: null })),
   pipelineJob: vi.fn(),
   pipelineRun: vi.fn(),
+  refreshCache: vi.fn(async () => ({})),
 } }))
 vi.mock('@/components/dashboard/useDashboardLayout', () => ({
   useDashboardLayout: () => ({ items: [], setItems: () => {} }),
@@ -36,6 +39,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.useFakeTimers()
   vi.clearAllMocks()
+  vi.mocked(api.quoteStatus).mockResolvedValue({ last_fetch_ms: null } as Awaited<ReturnType<typeof api.quoteStatus>>)
   sessionStorage.clear()
   host = document.createElement('div')
   document.body.append(host)
@@ -89,4 +93,55 @@ it('等统计可用后才为真正无数据的新用户弹出引导', async () =
   expect(host.textContent).toContain('立即获取数据')
   expect(host.textContent).toContain('欢迎首次使用')
   expect(sessionStorage.getItem('tf_welcome_shown')).toBe('1')
+})
+
+it('显示行情服务最后拉取时间, 页面重载不改写, 实时行情更新才推进', async () => {
+  vi.setSystemTime(new Date('2026-11-15T04:00:00Z'))
+  const lastFetch = Date.parse('2026-11-15T01:02:03Z')
+  vi.mocked(api.quoteStatus).mockResolvedValue({ last_fetch_ms: lastFetch } as Awaited<ReturnType<typeof api.quoteStatus>>)
+  vi.mocked(api.dataStatus).mockResolvedValue(busy)
+  await render()
+  const refreshedAt = () => host.querySelector('time[aria-label^="行情最近成功刷新"]')!
+  expect(refreshedAt().textContent).toBe('刷新 09:02:03')
+  expect(refreshedAt().getAttribute('datetime')).toBe('2026-11-15T01:02:03.000Z')
+  expect(refreshedAt().previousElementSibling?.textContent).toBe('非实时')
+  expect(refreshedAt().nextElementSibling?.textContent).toBe('重载')
+
+  await tick(10_000)
+  const reload = Array.from(host.querySelectorAll('button')).find(b => b.textContent === '重载')!
+  await act(async () => reload.click())
+  await tick(1)
+  expect(api.refreshCache).toHaveBeenCalledTimes(1)
+  expect(refreshedAt().textContent).toBe('刷新 09:02:03')
+
+  // 和 SSE 相同, 只刷新共享行情状态; 不依赖看板请求或浏览器当前时间。
+  vi.mocked(api.quoteStatus).mockResolvedValue({ last_fetch_ms: lastFetch + 3_000 } as Awaited<ReturnType<typeof api.quoteStatus>>)
+  await act(async () => { await client.invalidateQueries({ queryKey: QK.quoteStatus }) })
+  await tick(1)
+  expect(refreshedAt().textContent).toBe('刷新 09:02:06')
+})
+
+it('行情状态加载中和失败时保留上次实际拉取时间', async () => {
+  const lastFetch = Date.parse('2026-11-15T01:02:03Z')
+  vi.mocked(api.quoteStatus).mockResolvedValue({ last_fetch_ms: lastFetch } as Awaited<ReturnType<typeof api.quoteStatus>>)
+  vi.mocked(api.dataStatus).mockResolvedValue(busy)
+  await render()
+  const refreshedAt = () => host.querySelector('time[aria-label^="行情最近成功刷新"]')!
+  let rejectRefresh!: (error: Error) => void
+  vi.mocked(api.quoteStatus).mockImplementationOnce(() => new Promise((_, reject) => { rejectRefresh = reject }))
+  await tick(10_000)
+  let pending!: Promise<unknown>
+  await act(async () => { pending = client.refetchQueries({ queryKey: QK.quoteStatus }) })
+  expect(refreshedAt().textContent).toBe('刷新 09:02:03')
+  await act(async () => { rejectRefresh(new Error('network failed')); await pending })
+  await tick(1)
+  expect(refreshedAt().textContent).toBe('刷新 09:02:03')
+})
+
+it('没有成功拉取记录时显示空值, 不用页面加载时间代替', async () => {
+  vi.mocked(api.dataStatus).mockResolvedValue(busy)
+  await render()
+  const refreshedAt = host.querySelector('time[aria-label^="行情最近成功刷新"]')!
+  expect(refreshedAt.textContent).toBe('刷新 —')
+  expect(refreshedAt.hasAttribute('datetime')).toBe(false)
 })

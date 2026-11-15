@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense } from 'react'
+import { useEffect, useMemo, useRef, useState, Suspense } from 'react'
+import { createPortal } from 'react-dom'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
@@ -123,11 +124,11 @@ function MonitorBadge({ active }: { active: boolean }) {
   )
 }
 
-function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; items: readonly CoreIndex[] }) {
+function StatusBarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; items: readonly CoreIndex[] }) {
   if (items.length === 0) return null
   const quoteBySymbol = new Map((rows ?? []).map(q => [q.symbol, q]))
   return (
-    <div className="mt-2 grid grid-cols-2 gap-1.5 border-t border-border/60 pt-2">
+    <div className="grid min-w-[40rem] flex-1 grid-cols-4 gap-1 px-2">
       {items.map(item => {
         const q = quoteBySymbol.get(item.symbol)
         const value = q?.last_price ?? q?.close
@@ -136,19 +137,14 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
           <NavLink
             key={item.symbol}
             to={`/indices?symbol=${encodeURIComponent(item.symbol)}`}
-            className="block rounded bg-elevated/60 px-1.5 py-1.5 transition-colors hover:bg-elevated"
+            className="flex items-center justify-between gap-2 whitespace-nowrap rounded px-1.5 py-1 transition-colors hover:bg-elevated"
             title={`${item.name} ${item.symbol}`}
           >
-            {/* 名称不换行 + 涨跌幅不压缩: 两列布局下单卡内容区仅 85px,
-                「上证指数」41px + 涨跌幅 36px 已接近占满, 任其收缩或换行会把
-                指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。 */}
-            <div className="flex items-center justify-between gap-1">
-              <span className="min-w-0 truncate text-[10px] text-secondary">{item.name}</span>
-              <span className={`shrink-0 text-[10px] font-mono ${indexPctClass(pct)}`}>{fmtIndexPct(pct)}</span>
-            </div>
-            <div className={`mt-0.5 truncate font-mono text-[10px] ${indexPctClass(pct)}`}>
+            <span className="shrink-0 text-[10px] text-secondary">{item.name}</span>
+            <span className={`font-mono text-[10px] ${indexPctClass(pct)}`}>
               {fmtIndexValue(value)}
-            </div>
+            </span>
+            <span className={`shrink-0 text-[10px] font-mono ${indexPctClass(pct)}`}>{fmtIndexPct(pct)}</span>
           </NavLink>
         )
       })}
@@ -203,34 +199,23 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
     : level === 'warn' ? 'text-warning'
     : 'text-muted'
 
-  // 悬浮卡: 侧栏 aside 是 overflow-hidden, 用 fixed 定位逃逸裁剪 (坐标取自徽标实时位置)。
-  // 徽标靠近屏幕顶部时居中定位会把卡片上半截推出视口 → 渲染后按实际高度钳制进视口。
+  // 底栏详情向上展开，并按页面缩放换算坐标，避免超出视口。
   const linkRef = useRef<HTMLAnchorElement>(null)
-  const popRef = useRef<HTMLDivElement>(null)
   const closeTimer = useRef<number | undefined>(undefined)
   const [popPos, setPopPos] = useState<{ left: number; top: number } | null>(null)
   const openPop = () => {
     window.clearTimeout(closeTimer.current)
     const rect = linkRef.current?.getBoundingClientRect()
-    // rect 是视觉坐标, fixed 定位值是 #root 布局坐标 (缩放层), 需 ÷ scale 换算。
     if (rect) {
       const z = getPageScale()
-      setPopPos({ left: rect.right / z, top: (rect.top + rect.height / 2) / z })
+      const maxLeft = window.innerWidth / z - 256 - 8
+      setPopPos({ left: Math.max(8, Math.min(maxLeft, rect.left / z)), top: rect.top / z })
     }
   }
   const closePop = () => {
-    window.setTimeout(() => setPopPos(null), 80)
+    closeTimer.current = window.setTimeout(() => setPopPos(null), 80)
   }
   useEffect(() => () => window.clearTimeout(closeTimer.current), [])
-  useLayoutEffect(() => {
-    if (!popPos || !popRef.current) return
-    const h = popRef.current.offsetHeight
-    const margin = 8
-    const minCenter = margin + h / 2
-    const maxCenter = window.innerHeight / getPageScale() - margin - h / 2
-    const clamped = Math.min(maxCenter, Math.max(minCenter, popPos.top))
-    if (clamped !== popPos.top) setPopPos({ ...popPos, top: clamped })
-  }, [popPos])
 
   return (
     <>
@@ -262,10 +247,11 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
           </span>
         )}
       </NavLink>
-      {popPos && (
+      {popPos && createPortal(
         <div
-          ref={popRef}
-          className="fixed z-50 -translate-y-1/2 pl-3"
+          role="tooltip"
+          aria-label="数据源能力详情"
+          className="fixed z-50 -translate-y-full pb-2"
           style={{ left: popPos.left, top: popPos.top }}
           onMouseEnter={() => window.clearTimeout(closeTimer.current)}
           onMouseLeave={closePop}
@@ -274,7 +260,8 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
             initial={{ opacity: 0, x: -6 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
-            className="w-64 rounded-md border border-border bg-surface py-2.5 pl-3 pr-3.5 shadow-2xl shadow-black/40"
+            className="w-64 overflow-y-auto rounded-md border border-border bg-surface py-2.5 pl-3 pr-3.5 shadow-2xl shadow-black/40"
+            style={{ maxHeight: Math.max(0, popPos.top - 16) }}
           >
             <div className="mb-2 flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
@@ -314,7 +301,8 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
               <ChevronRight className="h-3 w-3" />
             </div>
           </motion.div>
-        </div>
+        </div>,
+        document.getElementById('root') ?? document.body,
       )}
     </>
   )
@@ -828,7 +816,7 @@ export function Layout() {
 
   return (
     <div
-      className="h-full grid bg-base text-foreground overflow-hidden transition-[grid-template-columns] duration-200 ease-smooth"
+      className="h-full min-h-0 grid grid-rows-[minmax(0,1fr)_auto] bg-base text-foreground overflow-hidden transition-[grid-template-columns] duration-200 ease-smooth"
       style={{ gridTemplateColumns: isDesktop && !overlayPreview ? (navState === 'expanded' ? '14rem 1fr' : navState === 'rail' ? '3.5rem 1fr' : '0 1fr') : '1fr' }}
     >
       {/* 移动端抽屉遮罩 */}
@@ -871,7 +859,7 @@ export function Layout() {
         className={cn(
           'bg-surface flex flex-col min-h-0 overflow-hidden',
           isDesktop
-            ? cn('h-full', navState === 'hidden' && !overlayPreview ? 'border-r-0' : 'border-r border-border')
+            ? cn('col-start-1 row-start-1 row-span-2 h-full', navState === 'hidden' && !overlayPreview ? 'border-r-0' : 'border-r border-border')
             : cn(
                 'fixed inset-y-0 left-0 z-50 w-[80vw] max-w-[320px] border-r border-border shadow-2xl',
                 'transition-transform duration-200 ease-smooth',
@@ -890,7 +878,7 @@ export function Layout() {
             />
             {!railMode && (
               <div className="font-semibold text-[11px] uppercase tracking-[0.12em] text-foreground/90 whitespace-nowrap">
-                Tick Stock Panel
+                AI主工作台
               </div>
             )}
             {/* 收起/展开 按钮 (桌面三态循环) / 移动端抽屉关闭按钮 */}
@@ -918,21 +906,11 @@ export function Layout() {
               </button>
             )}
           </div>
-
-            {/* 状态卡 — 收起时隐藏 */}
-            {!railMode && (
-              <div className="mt-2.5 border-t border-border/60 pt-1">
-                <DataSourceHealthBadge matrix={matrix} />
-              <div className="mx-2 border-t border-border/60" aria-hidden="true" />
-              <AIConfigBadge
-                configured={settingsState?.ai_configured ?? settingsState?.has_ai_key}
-                model={settingsState?.ai_model}
-              />
-              {/* 快捷行: 数据 + 扩展快捷方式 (AI 助手) 一行两个半宽 chip */}
-              <div className="mx-2 mt-1 flex items-stretch gap-1 border-t border-border/45 pt-1">
-                <QuickDataEntry syncing={isDataSyncing} justDone={dataSyncJustDone} />
-                <ExtensionSlot name="layout.header.quick" context={{}} compact />
-              </div>
+          {/* 暂时隐藏“数据 / AI 助手”快捷行, 需要恢复时移除 false 条件。 */}
+          {false && (
+            <div className="mx-2 mt-1 flex items-stretch gap-1 border-t border-border/45 pt-1">
+              <QuickDataEntry syncing={isDataSyncing} justDone={dataSyncJustDone} />
+              <ExtensionSlot name="layout.header.quick" context={{}} compact />
             </div>
           )}
         </div>
@@ -964,119 +942,6 @@ export function Layout() {
             compact
           />
         </nav>
-
-        {/* 全局行情开关 — 收起时只显示状态指示点 */}
-        {railMode ? (
-          <div className="border-t border-border px-2 py-2.5 shrink-0 flex justify-center">
-            <button
-              onClick={() => handleToggle(!realtimeEnabled)}
-              disabled={realtimeToggleDisabled}
-              aria-label={realtimeToggleTitle}
-              aria-busy={toggleQuote.isPending}
-              title={realtimeToggleTitle}
-              className="flex items-center justify-center rounded-btn p-1.5 transition-colors hover:bg-elevated/70 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <span className={`inline-block h-2 w-2 rounded-full ${realtimeIndicatorClass}`} />
-            </button>
-          </div>
-        ) : (
-        <div className="border-t border-border px-3 py-2.5 shrink-0">
-          {realtimeUnavailable && !realtimeProviderName ? (
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-secondary truncate">实时行情</span>
-                <span className="text-[10px] text-muted/80 bg-elevated px-1.5 py-0.5 rounded">
-                  不可用
-                </span>
-              </div>
-              <div className="mt-1.5 text-[10px] leading-snug text-muted">
-                当前数据源无实时行情权限,
-                <button
-                  type="button"
-                  onClick={() => navigate('/settings?tab=data-sources&highlight=data-sources')}
-                  className="mx-0.5 text-accent/80 hover:text-accent hover:underline"
-                >
-                  去配置数据源
-                </button>
-              </div>
-            </div>
-          ) : (
-            /* 实时可用 — 开关 + 跳转设置 */
-            <div className="flex items-center gap-2">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${realtimeIndicatorClass}`} />
-                <div className="min-w-0">
-                  <div className="text-xs font-medium leading-none text-foreground">实时行情</div>
-                  <div className="mt-1 flex min-w-0 items-center gap-1 text-[10px] leading-none">
-                    <span className="truncate text-muted">{realtimeProviderName || realtimeModeLabel}</span>
-                    <span className="shrink-0 text-border" aria-hidden="true">·</span>
-                    <span className={`shrink-0 ${realtimeStatusClass}`}>{realtimeStatusLabel}</span>
-                  </div>
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  onClick={() => navigate('/settings?tab=monitoring&highlight=quotes')}
-                  aria-label="打开实时监控设置"
-                  className="flex h-7 w-7 items-center justify-center rounded-btn text-muted transition-colors hover:bg-elevated hover:text-foreground"
-                  title="实时监控设置"
-                >
-                  <Settings className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={realtimeEnabled}
-                  aria-label={realtimeToggleTitle}
-                  aria-busy={toggleQuote.isPending}
-                  onClick={() => handleToggle(!realtimeEnabled)}
-                  disabled={realtimeToggleDisabled}
-                  title={realtimeToggleTitle}
-                  className={cn(
-                    'relative inline-flex h-5 w-9 items-center rounded-full border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface',
-                    realtimeEnabled
-                      ? 'border-accent/50 bg-accent shadow-[0_0_6px_rgba(59,130,246,0.25)]'
-                      : 'border-border bg-elevated hover:border-muted',
-                    realtimeToggleDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-                  )}
-                >
-                  <span className={cn(
-                    'inline-block h-3.5 w-3.5 rounded-full border border-black/5 bg-white shadow-sm transition-transform duration-200',
-                    realtimeEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
-                  )} />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* 状态提示 */}
-          {realtimeEnabled
-            && (!realtimeUnavailable || realtimeProviderName)
-            && (isPaused || (isWatchlistMode && !dismissFreeHint && !realtimeProviderName))
-            && (
-              <div className="mt-1.5 text-[10px] leading-snug space-y-0.5">
-                {isWatchlistMode && !dismissFreeHint && !realtimeProviderName && (
-                  <div className="flex items-start gap-1 text-amber-400/80">
-                    <span className="flex-1">自选实时模式监控前 5 只，全市场实时依赖数据源支持</span>
-                    <button
-                      onClick={() => setDismissFreeHint(true)}
-                      className="text-amber-400/50 hover:text-amber-400 shrink-0 transition-colors"
-                      title="关闭提示"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  </div>
-                )}
-                {isPaused && (
-                  <div className="text-warning/80">数据同步运行中，实时行情已临时暂停</div>
-                )}
-              </div>
-            )}
-          {!isWatchlistMode && (!realtimeUnavailable || !!realtimeProviderName) && (
-            <SidebarIndexQuotes rows={sidebarIndexQuotes?.rows} items={sidebarIndexes} />
-          )}
-        </div>
-        )}
 
         <div className={cn('border-t border-border py-3 shrink-0', railMode ? 'px-2 flex flex-col items-center gap-1' : 'px-2')}>
           <div className={railMode ? 'flex flex-col items-center gap-1' : 'flex items-center gap-1'}>
@@ -1148,7 +1013,8 @@ export function Layout() {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-        className="h-full overflow-auto scrollbar-gutter-stable"
+        className="min-h-0 min-w-0 overflow-auto scrollbar-gutter-stable"
+        style={{ gridRow: 1, gridColumn: isDesktop && !overlayPreview ? 2 : 1 }}
       >
         {streamStatus === 'reconnecting' && (
           <div
@@ -1171,6 +1037,99 @@ export function Layout() {
           <Outlet />
         </Suspense>
       </motion.main>
+      {/* 底栏仅占内容列，侧栏保持整高；独立行预留空间，滚动不遮挡页面。 */}
+      <footer aria-label="全局状态栏" className="row-start-2 min-w-0 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]" style={{ gridColumn: isDesktop && !overlayPreview ? 2 : 1 }}>
+        <div className="flex h-8 items-center overflow-x-auto whitespace-nowrap">
+          <div className="w-40 shrink-0 border-r border-border px-1">
+            <DataSourceHealthBadge matrix={matrix} />
+          </div>
+          <div className="w-32 shrink-0 border-r border-border px-1">
+            <AIConfigBadge configured={settingsState?.ai_configured ?? settingsState?.has_ai_key} model={settingsState?.ai_model} />
+          </div>
+          <div className="flex shrink-0 items-center gap-2 border-r border-border px-2">
+            {realtimeUnavailable && !realtimeProviderName ? (
+              <div className="flex items-center gap-2" title="当前数据源无实时行情权限">
+                <span className="text-xs text-secondary truncate">实时行情</span>
+                <span className="text-[10px] text-muted/80 bg-elevated px-1.5 py-0.5 rounded">
+                  不可用
+                </span>
+                <button
+                  type="button"
+                  onClick={() => navigate('/settings?tab=data-sources&highlight=data-sources')}
+                  className="mx-0.5 text-accent/80 hover:text-accent hover:underline"
+                >
+                  去配置数据源
+                </button>
+              </div>
+            ) : (
+              /* 实时可用 — 开关 + 跳转设置 */
+              <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${realtimeIndicatorClass}`} />
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-medium leading-none text-foreground">实时行情</span>
+                    <div className="flex min-w-0 items-center gap-1 text-[10px] leading-none">
+                      <span className="truncate text-muted">{realtimeProviderName || realtimeModeLabel}</span>
+                      <span className="shrink-0 text-border" aria-hidden="true">·</span>
+                      <span className={`shrink-0 ${realtimeStatusClass}`}>{realtimeStatusLabel}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    onClick={() => navigate('/settings?tab=monitoring&highlight=quotes')}
+                    aria-label="打开实时监控设置"
+                    className="flex h-7 w-7 items-center justify-center rounded-btn text-muted transition-colors hover:bg-elevated hover:text-foreground"
+                    title="实时监控设置"
+                  >
+                    <Settings className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={realtimeEnabled}
+                    aria-label={realtimeToggleTitle}
+                    aria-busy={toggleQuote.isPending}
+                    onClick={() => handleToggle(!realtimeEnabled)}
+                    disabled={realtimeToggleDisabled}
+                    title={realtimeToggleTitle}
+                    className={cn(
+                      'relative inline-flex h-5 w-9 items-center rounded-full border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface',
+                      realtimeEnabled
+                        ? 'border-accent/50 bg-accent shadow-[0_0_6px_rgba(59,130,246,0.25)]'
+                        : 'border-border bg-elevated hover:border-muted',
+                      realtimeToggleDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+                    )}
+                  >
+                    <span className={cn(
+                      'inline-block h-3.5 w-3.5 rounded-full border border-black/5 bg-white shadow-sm transition-transform duration-200',
+                      realtimeEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+                    )} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 状态提示 */}
+            {realtimeEnabled
+              && (!realtimeUnavailable || realtimeProviderName)
+              && isWatchlistMode && !dismissFreeHint && !realtimeProviderName
+              && (
+                <div className="flex items-center gap-1 text-[10px] text-warning/80" title="自选实时模式监控前 5 只，全市场实时依赖数据源支持">
+                  <span>仅监控前 5 只</span>
+                  <button
+                    onClick={() => setDismissFreeHint(true)}
+                    className="text-amber-400/50 hover:text-amber-400 shrink-0 transition-colors"
+                    title="关闭提示"
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </div>
+              )}
+          </div>
+          <StatusBarIndexQuotes rows={sidebarIndexQuotes?.rows} items={sidebarIndexes} />
+        </div>
+      </footer>
       <ToastContainer />
       <AlertToastContainer />
       <AiAnalysisHost />

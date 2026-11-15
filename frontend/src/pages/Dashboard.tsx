@@ -6,8 +6,9 @@ import { ArrowUpRight, Check, Database, Gauge, GripVertical, Info, Loader2, Play
 import { DatePicker } from '@/components/DatePicker'
 import { api, type AlertEvent, type DataStatus } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { cnDateTimeFromUtc } from '@/lib/format'
 import { DimensionMembersDialog, type DimensionMembersTarget } from '@/components/DimensionMembersDialog'
-import { useDataStatus, useCapabilities, useSettings, usePreferences } from '@/lib/useSharedQueries'
+import { useDataStatus, useCapabilities, useSettings, usePreferences, useQuoteStatus } from '@/lib/useSharedQueries'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import type { NavItem } from '@/lib/listNav'
 import { SettingsModal } from '@/components/data/SettingsModal'
@@ -84,6 +85,7 @@ export function Dashboard() {
     placeholderData: (prev) => prev,
   })
   const data = overview.data
+  const quoteStatus = useQuoteStatus()
   const caps = useCapabilities()
   const settings = useSettings()
   const hasDepth = !!caps.data?.capabilities?.['depth5.batch']
@@ -200,6 +202,10 @@ export function Dashboard() {
   const latestDate = dataStatus.data?.enriched?.latest_date ?? null
   const currentDate = selectedDate ?? data.as_of ?? ''
   const quoteRunning = (!selectedDate || selectedDate === latestDate) && data.quote_status?.running
+  // 复用 SSE 刷新的共享行情状态, 页面重载和聚合缓存重建不改变实际拉取时间。
+  const lastFetchMs = quoteStatus.data?.last_fetch_ms
+  const refreshedAtIso = lastFetchMs && Number.isFinite(lastFetchMs) ? new Date(lastFetchMs).toISOString() : undefined
+  const refreshedAt = cnDateTimeFromUtc(refreshedAtIso)
   // 实时模式: none / watchlist / full_market。
   // watchlist 模式仅自选 ≤5 只实时, 看板呈现的大盘数据实为盘后快照, 需提示避免误读。
   const quoteMode = data.quote_status?.mode as ('none' | 'watchlist' | 'full_market') | undefined
@@ -283,6 +289,14 @@ export function Dashboard() {
           )}
           <span className="flex items-center gap-1"><Timer className="h-3 w-3" />{quoteAge(data.quote_status?.quote_age_ms)}</span>
           <span className={quoteRunning ? 'text-accent' : 'text-warning'}>{quoteRunning ? '实时' : '非实时'}</span>
+          <time
+            dateTime={refreshedAtIso}
+            className="whitespace-nowrap font-mono tabular-nums"
+            title={refreshedAt ? `行情最近成功刷新: ${refreshedAt}（北京时间）` : '等待行情拉取成功'}
+            aria-label={`行情最近成功刷新: ${refreshedAt || '暂无'}（北京时间）`}
+          >
+            刷新 {refreshedAt ? refreshedAt.slice(11) : '—'}
+          </time>
           <button
             onClick={handleRefresh}
             disabled={manualFetching}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Layout } from './Layout'
@@ -87,6 +87,35 @@ async function mountGrouped(path = '/watchlist') {
   </QueryClientProvider></MemoryRouter>))
 }
 
+it.each(['expanded', 'rail', 'hidden', 'mobile'])('keeps global status available across pages in %s mode', async mode => {
+  localStorage.setItem('tf-nav-state', mode === 'mobile' ? 'expanded' : mode)
+  layoutMocks.desktop = mode !== 'mobile'
+  await act(async () => root.render(
+    <MemoryRouter><QueryClientProvider client={client}>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<p>市场页面</p>} />
+          <Route path="settings" element={<p>设置页面</p>} />
+        </Route>
+      </Routes>
+    </QueryClientProvider></MemoryRouter>,
+  ))
+  const footer = host.querySelector('footer[aria-label="全局状态栏"]')!
+  expect(footer).not.toBeNull()
+  expect(host.querySelector('main')?.textContent).toContain('市场页面')
+  expect(footer.querySelector('a[href="/settings?tab=data-sources"]')).not.toBeNull()
+  expect(footer.querySelector('[role="switch"]')).not.toBeNull()
+  expect(footer.querySelectorAll('a[href^="/indices?symbol="]')).toHaveLength(4)
+  expect(footer.textContent).toContain('上证指数')
+  expect(footer.textContent).toContain('--')
+  expect(host.querySelector('aside [role="switch"]')).toBeNull()
+  expect(host.querySelector('aside a[href="/settings?tab=ai"]')).toBeNull()
+  await act(async () => footer.querySelector<HTMLAnchorElement>('a[href="/settings?tab=ai"]')!.click())
+  expect(host.querySelector('main')?.textContent).toContain('设置页面')
+  expect(host.querySelector('footer')).toBe(footer)
+  expect(footer.querySelector('[role="switch"]')).not.toBeNull()
+})
+
 it('expands the active folder, preserves watchlist groups and stops hidden group-stat queries', async () => {
   await mountGrouped()
   const folder = host.querySelector<HTMLButtonElement>('button[aria-label="交易工作台"]')!
@@ -98,6 +127,18 @@ it('expands the active folder, preserves watchlist groups and stops hidden group
   expect(folder.getAttribute('aria-expanded')).toBe('false')
   expect(stats.isActive()).toBe(false)
   expect(host.querySelector('a[href="/settings"]')).not.toBeNull()
+})
+
+it('opens capability details outside the scrolling status bar and closes them with Escape', async () => {
+  await mountGrouped()
+  const link = host.querySelector<HTMLAnchorElement>('footer a[href="/settings?tab=data-sources"]')!
+  await act(async () => link.focus())
+  const tooltip = document.querySelector('[role="tooltip"][aria-label="数据源能力详情"]')!
+  expect(tooltip).not.toBeNull()
+  expect(host.querySelector('footer')?.contains(tooltip)).toBe(false)
+  expect(tooltip.textContent).toContain('正在获取能力路由状态')
+  await act(async () => link.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  expect(document.querySelector('[role="tooltip"][aria-label="数据源能力详情"]')).toBeNull()
 })
 
 it.each(['expanded', 'rail', 'mobile'])('keeps settings in the fixed footer with a saved layout in %s mode', async mode => {

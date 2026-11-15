@@ -109,7 +109,7 @@ export function Onboarding() {
             className="shrink-0"
             style={{ color: BRAND }}
           />
-          <span className="text-sm font-semibold tracking-tight">Tick Stock Panel</span>
+          <span className="text-sm font-semibold tracking-tight">AI主工作台</span>
         </div>
         <ol aria-label="初始设置进度" className="order-last flex w-full items-center gap-2 md:order-none md:w-auto md:gap-3">
           {STEPS.map((label, i) => (
