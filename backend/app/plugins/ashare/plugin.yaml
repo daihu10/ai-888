@@ -1,0 +1,15 @@
+# Free A-share daily bars from Tencent with Sina fallback.
+name: ashare
+display_name: "Ashare (Tencent / Sina)"
+runtime: none
+entry: app.plugins.ashare.provider:AshareProvider
+datasets: [daily, minute]
+description: "免费日线与 1 分钟行情：日线腾讯主源、失败时回退新浪；分钟线腾讯主源、失败或无数据时回退新浪。新浪/腾讯均无数据的北交所分钟线可使用已配置的 TdxQuant 兜底（按通达信积分规则计费）。"
+homepage: "https://github.com/mpquant/Ashare"
+usage_notes:
+  - "日线 amount 与分钟 amount 留空；行情端点不提供成交额，不会用价格和成交量估算。"
+  - "分钟端点逐股票请求且返回深度有限，适合最近交易日分时查看；更早日期可能超出上游范围。"
+  - "腾讯、新浪无分钟数据时尝试东方财富最近五个交易日的分时数据。"
+  - "腾讯、新浪无分钟数据时尝试免费的通达信公开行情，覆盖范围及北交所支持取决于服务器。"
+  - "仅北交所股票在腾讯和新浪均无分钟数据时，才尝试已配置的 TdxQuant 分钟能力；此兜底可能消耗积分。"
+  - "实时快照、除权因子与财务数据继续使用各自配置的数据源。"

@@ -1,0 +1,554 @@
+// @vitest-environment jsdom
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { TradingPlanPage } from './Page'
+import type { TradingPlan, TradingPlanDraft } from '@/lib/api'
+
+const mockApi = vi.hoisted(() => ({ tradingPlan: vi.fn(), tradingPlanDates: vi.fn(), tradingPlanScores: vi.fn(), saveTradingPlan: vi.fn(), tradingPlanQuotes: vi.fn(), tradingPlanPrices: vi.fn(), syncTradingPlan: vi.fn() }))
+const openStockPreview = vi.hoisted(() => vi.fn(() => true))
+vi.mock('@/extensions/stockPreview', () => ({ openStockPreview }))
+vi.mock('@/lib/api', () => ({ api: mockApi }))
+vi.mock('@/components/Toast', () => ({ toast: vi.fn() }))
+vi.mock('@/components/financials/StockFinancialSearch', () => ({
+  StockFinancialSearch: ({ onSelect }: { onSelect: (symbol: string, name: string) => void }) =>
+    <button type="button" onClick={() => onSelect('600000.SH', '浦发银行')}>选择浦发银行</button>,
+}))
+
+let container: HTMLDivElement
+let root: Root
+let queryClient: QueryClient
+const review = () => ({ answer: null, reason: '', stop_loss: '', score: null })
+function empty(day = '2026-11-19'): TradingPlan {
+  return {
+    date: day, schema_version: 1, revision: null, updated_at: null, overall_score: null,
+    market_above_ma5: null, matches_mode: null, holdings: [], highest_board_count: null,
+    market_sentiment: null,
+    limit_up_count: null, limit_down_count: null, core_theme: '', secondary_theme: '', holding_execution: '', target_stocks: '',
+    holding_execution_followed: null, target_stocks_followed: null,
+    execution_review: review(), ma5_review: review(), ma20_review: review(),
+  }
+}
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-11-19T15:10:00+08:00'))
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  mockApi.tradingPlan.mockImplementation(async (day: string) => empty(day))
+  mockApi.tradingPlanDates.mockResolvedValue({ dates: [] })
+  mockApi.tradingPlanScores.mockImplementation(async (year: number) => ({ year, rows: [] }))
+  mockApi.tradingPlanQuotes.mockResolvedValue({ rows: [] })
+  mockApi.tradingPlanPrices.mockResolvedValue({ date: '2026-11-18', rows: [] })
+  mockApi.saveTradingPlan.mockImplementation(async (day: string, draft: TradingPlanDraft) => ({ ...empty(day), ...draft, revision: 'saved', updated_at: '2026-11-19T16:00:00+08:00' }))
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+})
+afterEach(async () => {
+  await act(async () => root.unmount())
+  queryClient.clear()
+  container.remove()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
+async function flush() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 15)) }) }
+async function render(day?: string) {
+  const entry = day ? `/trading-plan?date=${day}` : '/trading-plan'
+  await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[entry]}><TradingPlanPage /></MemoryRouter></QueryClientProvider>))
+  await flush()
+}
+function button(text: string) { return [...container.querySelectorAll('button')].find(b => b.textContent === text)! }
+async function click(element: HTMLElement) { await act(async () => element.click()); await flush() }
+async function selectDate(day: string, label = '计划日期') {
+  await click(container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!)
+  const popup = document.body.querySelector('button[aria-label="上个月"]')!.parentElement!.parentElement!
+  const dateButton = [...popup.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === String(Number(day.slice(8))))!
+  await click(dateButton)
+}
+async function change(element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement, value: string) {
+  await act(async () => {
+    const proto = element.tagName === 'SELECT' ? HTMLSelectElement.prototype : element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(element, value)
+    element.dispatchEvent(new Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }))
+  })
+  await flush()
+}
+
+it('adds holdings once, edits stop loss and saves all three scores with the draft', async () => {
+  await render()
+  expect(mockApi.tradingPlanQuotes).not.toHaveBeenCalled()
+  expect(mockApi.tradingPlanPrices).not.toHaveBeenCalled()
+  expect(container.textContent).toContain('待完成')
+  const toolbar = container.querySelector('[role="toolbar"]')!
+  expect(toolbar.querySelector('button[aria-label="计划日期"]')).not.toBeNull()
+  const toolbarButtons = [...toolbar.querySelectorAll('button')]
+  const yesterdayIndex = toolbarButtons.findIndex(item => item.textContent === '昨天')
+  expect(toolbarButtons[yesterdayIndex - 1]?.getAttribute('aria-label')).toBe('计划日期')
+  expect(toolbarButtons[yesterdayIndex + 1]?.textContent).toBe('今天')
+  expect(toolbar.querySelector('select[aria-label="历史计划"]')).not.toBeNull()
+  expect(toolbar.contains(button('保存计划'))).toBe(true)
+  expect(container.querySelectorAll('button[type="submit"]')).toHaveLength(1)
+  const downCount = [...container.querySelectorAll<HTMLInputElement>('input[type="number"]')].find(input => input.closest('label')?.textContent === '跌停数')!
+  expect(downCount.value).toBe('')
+  await change(downCount, '12')
+  await click(button('选择浦发银行'))
+  await click(button('选择浦发银行'))
+  expect(container.textContent).toContain('持仓标的 · 1 只')
+  expect(container.textContent).toContain('浦发银行已在持仓标的中')
+  for (const [days, answer] of [[5, 0], [10, 1], [20, 0]]) {
+    await click(container.querySelectorAll<HTMLInputElement>(`fieldset[aria-label="浦发银行是否在${days}天线上"] input`)[answer])
+  }
+  const stop = [...container.querySelectorAll('textarea')].find(t => t.closest('label')?.textContent?.includes('浦发银行 · 止损线'))!
+  await change(stop, '跌破10元')
+  const scores = container.querySelectorAll<HTMLSelectElement>('select[aria-label$="评分"]')
+  for (const [index, value] of ['10', '8', '7'].entries()) await change(scores[index], value)
+  expect(container.textContent).toContain('8.3 / 10')
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledWith('2026-11-19', expect.objectContaining({
+    limit_down_count: 12,
+    holdings: [expect.objectContaining({ symbol: '600000.SH', stop_loss: '跌破10元', above_ma5: true, above_ma10: false, above_ma20: true })],
+    execution_review: expect.objectContaining({ score: 10 }),
+    ma5_review: expect.objectContaining({ score: 8 }), ma20_review: expect.objectContaining({ score: 7 }),
+  }))
+  expect(container.textContent).toContain('已保存')
+  expect([...container.querySelectorAll<HTMLInputElement>('input[type="number"]')].find(input => input.closest('label')?.textContent === '跌停数')!.value).toBe('12')
+})
+
+it('colors holding names and symbols by the 10-day and 20-day line status', async () => {
+  const cases = [
+    { symbol: '000001.SZ', name: '双线下方', above_ma10: false, above_ma20: false, color: 'text-green-700' },
+    { symbol: '000002.SZ', name: '仅20日线下方', above_ma10: true, above_ma20: false, color: 'text-red-700' },
+    { symbol: '000003.SZ', name: '仅10日线下方', above_ma10: false, above_ma20: true, color: 'text-yellow-700' },
+    { symbol: '000004.SZ', name: '双线之上', above_ma10: true, above_ma20: true, color: 'text-foreground' },
+    { symbol: '000005.SZ', name: '均线未选择', above_ma10: null, above_ma20: null, color: 'text-foreground' },
+  ]
+  mockApi.tradingPlan.mockResolvedValueOnce({ ...empty(), holdings: cases.map(({ color: _color, ...holding }) => ({
+    ...holding, above_ma5: null, reason: '', stop_loss: '',
+  })) })
+  await render()
+
+  const stockButtons = [...container.querySelectorAll<HTMLButtonElement>('button[title="打开股票详情"]')]
+  expect(stockButtons).toHaveLength(cases.length)
+  for (const [index, entry] of cases.entries()) {
+    const paragraphs = stockButtons[index].querySelectorAll('p')
+    expect(paragraphs[0].className).toContain(entry.color)
+    expect(paragraphs[1].className).toContain(entry.color)
+  }
+})
+
+it('highlights both plan and current prices for holdings below a moving average', async () => {
+  mockApi.tradingPlan.mockResolvedValueOnce({ ...empty(), holdings: [{
+    symbol: '600000.SH', name: '浦发银行', above_ma5: false, above_ma10: false, above_ma20: false, reason: '', stop_loss: '',
+  }] })
+  mockApi.tradingPlanQuotes.mockResolvedValueOnce({ rows: [{
+    symbol: '600000.SH', price: 8.23, quote_freshness: { state: 'live', data_date: '2026-11-19', message: '实时行情' },
+  }] })
+  await render()
+
+  for (const label of ['计划当日价', '当前价格']) {
+    const price = container.querySelector(`[aria-label="${label}"] p.font-mono`)!
+    expect(price.className).toContain('font-bold')
+    expect(price.className).toContain('text-green-700')
+  }
+})
+
+it('switches to yesterday with unsaved confirmation, disables yesterday when selected, and handles year boundaries', async () => {
+  await render()
+  await click(button('选择浦发银行'))
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  await click(button('昨天'))
+  expect(confirm).toHaveBeenCalledTimes(1)
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-19')
+  expect(container.querySelector('button[aria-label="计划日期"]')?.textContent).toContain('2026-11-19')
+  confirm.mockReturnValue(true)
+  await click(button('昨天'))
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-18')
+  expect(container.querySelector('button[aria-label="计划日期"]')?.textContent).toContain('2026-11-18')
+  expect(button('昨天').disabled).toBe(true)
+
+  vi.setSystemTime(new Date('2027-01-01T10:00:00+08:00'))
+  await render('2027-01-01')
+  await click(button('昨天'))
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-12-31')
+  expect(container.querySelector('button[aria-label="计划日期"]')?.textContent).toContain('2026-12-31')
+})
+
+it('defaults to and highlights yesterday before 15:10 Beijing time', async () => {
+  vi.setSystemTime(new Date('2026-11-19T15:09:00+08:00'))
+  await render()
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-18')
+  expect(button('昨天').getAttribute('aria-pressed')).toBe('true')
+  expect(button('昨天').className).toContain('ring-accent/40')
+  expect(button('今天').getAttribute('aria-pressed')).toBe('false')
+})
+
+it('defaults to and highlights today starting at 15:10 Beijing time', async () => {
+  vi.setSystemTime(new Date('2026-11-19T15:10:00+08:00'))
+  await render()
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-19')
+  expect(button('今天').getAttribute('aria-pressed')).toBe('true')
+  expect(button('今天').className).toContain('ring-accent/40')
+  expect(button('昨天').getAttribute('aria-pressed')).toBe('false')
+})
+
+it('saves market sentiment selections per date without adding mode warnings', async () => {
+  const saved = new Map<string, TradingPlan>()
+  mockApi.tradingPlan.mockImplementation(async (day: string) => saved.get(day) ?? empty(day))
+  mockApi.saveTradingPlan.mockImplementation(async (day: string, draft: TradingPlanDraft) => {
+    const plan = { ...empty(day), ...draft, revision: String(mockApi.saveTradingPlan.mock.calls.length) }
+    saved.set(day, plan)
+    return plan
+  })
+  await render()
+  const sentiment = () => container.querySelector<HTMLSelectElement>('select[aria-label="市场情绪"]')!
+  expect(sentiment().value).toBe('')
+  expect([...sentiment().options].map(option => option.text)).toEqual(['请选择', '强势', '震荡', '弱势'])
+  for (const value of ['强势', '震荡', '弱势']) {
+    await change(sentiment(), value)
+    expect(container.querySelector('[aria-label="模式检查提醒"]')).toBeNull()
+    await click(button('保存计划'))
+    expect(mockApi.saveTradingPlan).toHaveBeenLastCalledWith('2026-11-19', expect.objectContaining({ market_sentiment: value }))
+    expect(sentiment().value).toBe(value)
+  }
+  await selectDate('2026-11-18')
+  expect(sentiment().value).toBe('')
+  await selectDate('2026-11-19')
+  expect(sentiment().value).toBe('弱势')
+})
+
+it('keeps both market themes on one wrapping row with fixed 333px inputs', async () => {
+  await render()
+  const inputs = [...container.querySelectorAll<HTMLInputElement>('input[placeholder="填写板块或题材"]')]
+  expect(inputs).toHaveLength(2)
+  const row = inputs[0].closest('div.mt-2')!
+  expect(row.className).toContain('flex-wrap')
+  expect(row.contains(inputs[1])).toBe(true)
+  expect(inputs.map(input => input.parentElement!.className)).toEqual(['w-[333px] max-w-full shrink-0', 'w-[333px] max-w-full shrink-0'])
+  expect(inputs.map(input => input.closest('label')?.querySelector('span')?.textContent)).toEqual(['核心主流', '次主流'])
+})
+
+it('shows latest quote provenance and opens the host detail with the holding navigation list', async () => {
+  mockApi.tradingPlanQuotes.mockResolvedValue({ rows: [{ symbol: '600000.SH', price: 12.36,
+    quote_freshness: { state: 'historical', data_date: '2026-11-18', message: '历史行情，按实际数据日期显示' } }] })
+  await render()
+  await click(button('选择浦发银行'))
+  expect(mockApi.tradingPlanQuotes).toHaveBeenCalledWith(['600000.SH'])
+  expect(container.textContent).toContain('12.36')
+  expect(container.querySelector('[aria-label="当前价格"]')?.textContent).toContain('最近行情2026-11-18')
+  await click(container.querySelector<HTMLButtonElement>('button[aria-label="查看浦发银行 600000.SH详情"]')!)
+  expect(openStockPreview).toHaveBeenCalledWith({ symbol: '600000.SH', name: '浦发银行', navList: [{ symbol: '600000.SH', name: '浦发银行' }] })
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+})
+
+it('shows selected day close alongside current quotes, isolating historical date caches', async () => {
+  mockApi.tradingPlanQuotes.mockResolvedValue({ rows: [{ symbol: '600000.SH', price: 12.36,
+    quote_freshness: { state: 'live', data_date: '2026-11-19', message: '实时行情' } }] })
+  mockApi.tradingPlanPrices.mockImplementation(async (day: string) => ({ date: day,
+    rows: [{ symbol: '600000.SH', price: day === '2026-11-18' ? 11.25 : null, data_date: day === '2026-11-18' ? day : null }] }))
+  mockApi.tradingPlan.mockImplementation(async (day: string) => ({ ...empty(day), holdings: [{
+    symbol: '600000.SH', name: '浦发银行', above_ma5: false, above_ma10: null, above_ma20: null, reason: '', stop_loss: '',
+  }] }))
+  await render()
+  await flush()
+  expect(container.querySelector('[aria-label="计划当日价"]')?.textContent).toContain('12.36实时2026-11-19')
+  expect(mockApi.tradingPlanPrices).not.toHaveBeenCalled()
+  await selectDate('2026-11-18')
+  await flush()
+  const historical = () => container.querySelector('[aria-label="计划当日价"]')?.textContent
+  expect(historical()).toContain('11.25收盘2026-11-18')
+  expect(container.querySelector('[aria-label="当前价格"]')?.textContent).toContain('12.36实时2026-11-19')
+  expect(mockApi.tradingPlanPrices).toHaveBeenCalledWith('2026-11-18', ['600000.SH'])
+  await selectDate('2026-11-15')
+  await flush()
+  expect(historical()).toContain('暂无当日行情2026-11-15')
+  expect(historical()).not.toContain('11.25')
+  expect(container.querySelector('[aria-label="当前价格"]')?.textContent).toContain('12.36')
+  expect(container.querySelector<HTMLInputElement>('fieldset[aria-label="浦发银行是否在5天线上"] input:checked')?.closest('label')?.textContent).toContain('否')
+})
+
+it('keeps current prices available when historical prices fail and retries independently', async () => {
+  mockApi.tradingPlanPrices.mockRejectedValueOnce(new Error('历史读取失败'))
+  mockApi.tradingPlanPrices.mockResolvedValueOnce({ date: '2026-11-18', rows: [{ symbol: '600000.SH', price: 11.25, data_date: '2026-11-18' }] })
+  mockApi.tradingPlanQuotes.mockResolvedValue({ rows: [{ symbol: '600000.SH', price: 12.36,
+    quote_freshness: { state: 'live', data_date: '2026-11-19', message: '实时行情' } }] })
+  await render()
+  await selectDate('2026-11-18')
+  await click(button('选择浦发银行'))
+  expect(container.textContent).toContain('计划当日价格加载失败')
+  expect(container.querySelector('[aria-label="当前价格"]')?.textContent).toContain('12.36')
+  expect(button('保存计划').disabled).toBe(false)
+  await click(button('重试当日价格'))
+  expect(container.querySelector('[aria-label="计划当日价"]')?.textContent).toContain('11.25收盘')
+})
+
+it('keeps the plan editable when quotes fail and retries to show missing prices explicitly', async () => {
+  mockApi.tradingPlanQuotes.mockRejectedValueOnce(new Error('行情不可用'))
+  await render()
+  await click(button('选择浦发银行'))
+  expect(container.textContent).toContain('行情加载失败')
+  expect(button('保存计划').disabled).toBe(false)
+  await click(button('重试行情'))
+  expect(container.querySelector('[aria-label="当前价格"]')?.textContent).toContain('暂无行情')
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(1)
+})
+
+it('highlights unsafe answers with reversed non-MA review polarity, preserves them after save and clears corrected warnings', async () => {
+  await render()
+  const warning = () => container.querySelector('[aria-label="模式检查提醒"]')
+  expect(warning()).toBeNull()
+  await click(button('选择浦发银行'))
+  const groups = [...container.querySelectorAll<HTMLFieldSetElement>('fieldset[aria-label]')]
+  expect(groups).toHaveLength(10)
+  for (const [index, group] of groups.entries()) {
+    const unsafe = group.querySelectorAll<HTMLInputElement>('input[type="radio"]')[index >= 8 ? 0 : 1]
+    await click(unsafe)
+    expect(unsafe.closest('label')!.className).toContain('border-danger')
+    expect(unsafe.className).toContain('accent-danger')
+    expect(warning()?.textContent).toContain(`存在不符合模式的交易 ${index + 1} 项`)
+  }
+  await click(button('保存计划'))
+  expect(warning()?.textContent).toBe('存在不符合模式的交易 10 项请认真核对，给出理由！防止下次再犯错！')
+  expect(warning()?.closest('header')).not.toBeNull()
+  expect(container.querySelector('form')!.contains(warning())).toBe(false)
+  expect(container.textContent).toContain('已保存')
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledWith('2026-11-19', expect.objectContaining({
+    holding_execution_followed: false, target_stocks_followed: false,
+    ma5_review: expect.objectContaining({ answer: true }), ma20_review: expect.objectContaining({ answer: true }),
+  }))
+  for (const [index, group] of [...container.querySelectorAll<HTMLFieldSetElement>('fieldset[aria-label]')].entries()) {
+    const safe = group.querySelectorAll<HTMLInputElement>('input[type="radio"]')[index >= 8 ? 1 : 0]
+    await click(safe)
+    expect(safe.closest('label')!.className).not.toContain('border-danger')
+    expect(group.querySelector('input:checked')!.closest('label')!.className).not.toContain('border-danger')
+  }
+  expect(warning()).toBeNull()
+  await click(container.querySelectorAll<HTMLInputElement>('fieldset[aria-label="大盘是否在5天线上"] input')[1])
+  expect(warning()).not.toBeNull()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  await selectDate('2026-11-18')
+  expect(warning()).toBeNull()
+})
+
+it('syncs today prices and MA choices together while retaining missing choices and manual notes', async () => {
+  let resolve!: (result: unknown) => void
+  mockApi.syncTradingPlan.mockReturnValue(new Promise(done => { resolve = done }))
+  await render()
+  expect(button('同步').disabled).toBe(true)
+  await click(button('选择浦发银行'))
+  await click(container.querySelectorAll<HTMLInputElement>('fieldset[aria-label="浦发银行是否在20天线上"] input')[0])
+  await change(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="浦发银行 · 持仓理由"]')!, '等待突破')
+  await click(button('同步'))
+  expect(mockApi.syncTradingPlan).toHaveBeenCalledWith('2026-11-19', ['600000.SH'])
+  expect(button('同步中…').matches(':disabled')).toBe(true)
+  expect(button('处理中…').disabled).toBe(true)
+  expect(container.querySelector<HTMLButtonElement>('[aria-label="计划日期"]')!.disabled).toBe(true)
+  await act(async () => resolve({ date: '2026-11-19', rows: [{
+    symbol: '600000.SH', price: 8.23, above_ma5: false, above_ma10: true, above_ma20: null,
+    quote_freshness: { state: 'live', data_date: '2026-11-19', message: '实时行情' },
+    issues: ['缺少20日均线数据，保留原有勾选'],
+  }] }))
+  await flush()
+  expect([...container.querySelectorAll<HTMLInputElement>('fieldset[aria-label="浦发银行是否在5天线上"] input')].map(input => input.checked)).toEqual([false, true])
+  for (const days of [10, 20]) expect(container.querySelector<HTMLInputElement>(`fieldset[aria-label="浦发银行是否在${days}天线上"] input`)!.checked).toBe(true)
+  expect(container.textContent).toContain('8.23')
+  expect(container.textContent).toContain('回填 2 项均线判断')
+  expect(container.textContent).toContain('缺少20日均线数据')
+  expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="浦发银行 · 持仓理由"]')!.value).toBe('等待突破')
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledWith('2026-11-19', expect.objectContaining({
+    holdings: [expect.objectContaining({ above_ma5: false, above_ma10: true, above_ma20: true, reason: '等待突破' })],
+  }))
+})
+
+it('keeps MA choices on sync failure and allows retry', async () => {
+  mockApi.syncTradingPlan.mockRejectedValueOnce(new Error('本次未取得最新行情'))
+  mockApi.syncTradingPlan.mockResolvedValueOnce({ date: '2026-11-19', rows: [] })
+  await render()
+  await click(button('选择浦发银行'))
+  await click(container.querySelector<HTMLInputElement>('fieldset[aria-label="浦发银行是否在5天线上"] input')!)
+  await click(button('同步'))
+  expect(container.textContent).toContain('同步失败：本次未取得最新行情')
+  expect(container.querySelector<HTMLInputElement>('fieldset[aria-label="浦发银行是否在5天线上"] input')!.checked).toBe(true)
+  await click(button('同步'))
+  expect(mockApi.syncTradingPlan).toHaveBeenCalledTimes(2)
+  expect(container.textContent).not.toContain('同步失败：')
+})
+
+it('disables syncing historical plans so today quotes cannot overwrite history', async () => {
+  await render()
+  await selectDate('2026-11-18')
+  await click(button('选择浦发银行'))
+  expect(button('同步').disabled).toBe(true)
+  expect(container.textContent).toContain('仅当天可同步')
+  expect(mockApi.syncTradingPlan).not.toHaveBeenCalled()
+})
+
+it('preserves unsaved edits when date switching is cancelled and resets after accepting', async () => {
+  await render()
+  await click(button('选择浦发银行'))
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const date = container.querySelector<HTMLButtonElement>('button[aria-label="计划日期"]')!
+  await selectDate('2026-11-20')
+  expect(confirm).toHaveBeenCalled()
+  expect(container.textContent).toContain('持仓标的 · 1 只')
+  expect(date.textContent).toContain('2026-11-19')
+  confirm.mockReturnValue(true)
+  await selectDate('2026-11-20')
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-20')
+  expect(container.textContent).toContain('持仓标的 · 0 只')
+})
+
+it('keeps edits and allows retry after a failed save', async () => {
+  mockApi.saveTradingPlan.mockRejectedValueOnce(new Error('磁盘不可写'))
+  await render()
+  await click(button('选择浦发银行'))
+  await click(button('保存计划'))
+  expect(container.textContent).toContain('磁盘不可写')
+  expect(container.textContent).toContain('持仓标的 · 1 只')
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(2)
+  expect(container.textContent).toContain('已保存')
+})
+
+it('blocks editing on load failure and supports retry', async () => {
+  mockApi.tradingPlan.mockRejectedValueOnce(new Error('计划版本不兼容'))
+  await render()
+  expect(container.textContent).toContain('计划版本不兼容')
+  expect(button('保存计划').disabled).toBe(true)
+  await click(button('重试'))
+  expect(container.textContent).toContain('当天暂无计划')
+})
+
+it('shows loading without a writable form until the plan arrives', async () => {
+  let resolve!: (value: TradingPlan) => void
+  mockApi.tradingPlan.mockReturnValue(new Promise<TradingPlan>(done => { resolve = done }))
+  await render()
+  expect(container.textContent).toContain('正在加载')
+  expect(button('保存计划').disabled).toBe(true)
+  await act(async () => resolve(empty()))
+  await flush()
+  expect(container.textContent).toContain('当天暂无计划')
+})
+
+it('imports stocks and notes from the selected date, preserving duplicates and leaving MA choices unselected', async () => {
+  const holding = { symbol: '600000.SH', name: '浦发银行', above_ma5: true, above_ma10: false, above_ma20: true, reason: '当前理由', stop_loss: '当前止损' }
+  mockApi.tradingPlan.mockImplementation(async (day: string) => ({ ...empty(day), holdings: day === '2026-11-19' ? [holding] : [
+    { ...holding, reason: '旧理由', stop_loss: '旧止损' },
+    { ...holding, symbol: '000001.SZ', name: '平安银行', reason: '历史持仓逻辑', stop_loss: '跌破9元' },
+  ], core_theme: day === '2026-11-19' ? '当前题材' : '历史题材' }))
+  await render()
+  expect(container.querySelector('button[aria-label="导入来源日期"]')!.textContent).toBe('2026-11-18')
+  await selectDate('2026-11-17', '导入来源日期')
+  await click(button('导入'))
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-17')
+  expect(container.textContent).toContain('已从 2026-11-17 导入 1 只股票，跳过 1 只已有股票')
+  expect(container.textContent).toContain('有未保存的修改')
+  expect(container.querySelectorAll('fieldset[aria-label^="平安银行是否"] input:checked')).toHaveLength(0)
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+  expect(mockApi.syncTradingPlan).not.toHaveBeenCalled()
+  expect(mockApi.tradingPlanQuotes).toHaveBeenLastCalledWith(['000001.SZ', '600000.SH'])
+  await click(button('导入'))
+  expect(container.textContent).toContain('无需重复导入')
+  expect(container.textContent).toContain('持仓标的 · 2 只')
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledWith('2026-11-19', expect.objectContaining({
+    core_theme: '当前题材', execution_review: review(),
+    holdings: [holding, { symbol: '000001.SZ', name: '平安银行', reason: '历史持仓逻辑', stop_loss: '跌破9元', above_ma5: null, above_ma10: null, above_ma20: null }],
+  }))
+})
+
+it('defaults the import date to the previous calendar day across year boundaries and resets when switching plans', async () => {
+  await render('2027-01-01')
+  expect(container.querySelector('button[aria-label="导入来源日期"]')!.textContent).toBe('2026-12-31')
+  await click(button('今天'))
+  expect(container.querySelector('button[aria-label="导入来源日期"]')!.textContent).toBe('2026-11-18')
+  await click(container.querySelector<HTMLButtonElement>('button[aria-label="导入来源日期"]')!)
+  const popup = document.body.querySelector('button[aria-label="上个月"]')!.parentElement!.parentElement!
+  expect([...popup.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === '19')!.disabled).toBe(true)
+})
+
+it('reports an empty source without changing the draft or saving', async () => {
+  await render()
+  await click(button('选择浦发银行'))
+  await click(button('导入'))
+  expect(container.textContent).toContain('2026-11-18 没有可导入的持仓标的')
+  expect(container.textContent).toContain('持仓标的 · 1 只')
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+})
+
+it('locks editing and date switching while importing, preserves edits after failure and allows retry', async () => {
+  let reject!: (error: Error) => void
+  await render()
+  await click(button('选择浦发银行'))
+  const reason = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="浦发银行 · 持仓理由"]')!
+  await change(reason, '保留当前理由')
+  mockApi.tradingPlan.mockReturnValueOnce(new Promise<TradingPlan>((_, fail) => { reject = fail }))
+  await click(button('导入'))
+  expect(container.querySelector<HTMLButtonElement>('button[aria-label="计划日期"]')!.disabled).toBe(true)
+  expect(container.querySelector<HTMLButtonElement>('button[aria-label="导入来源日期"]')!.disabled).toBe(true)
+  expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+  expect(reason.closest('fieldset[disabled]')).not.toBeNull()
+  expect(container.querySelector<HTMLButtonElement>('[data-score-date="2026-11-18"]')!.disabled).toBe(true)
+  await act(async () => reject(new Error('历史计划读取失败')))
+  await flush()
+  expect(container.textContent).toContain('导入失败：历史计划读取失败')
+  expect(reason.value).toBe('保留当前理由')
+  expect(button('保存计划').disabled).toBe(false)
+  await click(button('导入'))
+  expect(container.textContent).toContain('没有可导入的持仓标的')
+  expect(container.textContent).not.toContain('导入失败')
+})
+
+it('rejects importing beyond 100 holdings without partially modifying the draft', async () => {
+  await render()
+  await click(button('选择浦发银行'))
+  mockApi.tradingPlan.mockResolvedValueOnce({ ...empty('2026-11-18'), holdings: Array.from({ length: 100 }, (_, index) => ({
+    symbol: `${String(index + 1).padStart(6, '0')}.SZ`, name: `股票${index}`, above_ma5: true, above_ma10: true, above_ma20: true, reason: '', stop_loss: '',
+  })) })
+  await click(button('导入'))
+  expect(container.textContent).toContain('导入后超过100只持仓标的')
+  expect(container.textContent).toContain('持仓标的 · 1 只')
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+})
+
+it('switches from a white calendar day while respecting unsaved changes', async () => {
+  await render()
+  await click(button('选择浦发银行'))
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const date = () => container.querySelector<HTMLButtonElement>('[data-score-date="2026-11-18"]')!
+  expect(date().className).toContain('bg-white')
+  await click(date())
+  expect(confirm).toHaveBeenCalledTimes(1)
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-19')
+  expect(container.textContent).toContain('持仓标的 · 1 只')
+  confirm.mockReturnValue(true)
+  await click(date())
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-18')
+  expect(container.textContent).toContain('持仓标的 · 0 只')
+  expect(date().getAttribute('aria-pressed')).toBe('true')
+})
+
+it('refreshes saved calendar scores after save and locks dates during save', async () => {
+  let score: number | null = null
+  let resolve!: (value: TradingPlan) => void
+  mockApi.tradingPlanScores.mockImplementation(async (year: number) => ({ year, rows: [{ date: '2026-11-19', overall_score: score }] }))
+  mockApi.saveTradingPlan.mockImplementation((_day: string, draft: TradingPlanDraft) => new Promise<TradingPlan>(done => {
+    resolve = value => { score = 9; done({ ...value, ...draft }) }
+  }))
+  await render()
+  const date = () => container.querySelector<HTMLButtonElement>('[data-score-date="2026-11-19"]')!
+  for (const select of container.querySelectorAll<HTMLSelectElement>('select[aria-label$="评分"]')) await change(select, '9')
+  expect(date().className).toContain('bg-white')
+  await click(button('保存计划'))
+  expect(date().disabled).toBe(true)
+  await act(async () => resolve({ ...empty(), revision: 'saved', overall_score: 9 }))
+  await flush()
+  expect(mockApi.tradingPlanScores).toHaveBeenCalledTimes(2)
+  expect(date().className).toContain('bg-red-600')
+  expect(date().getAttribute('aria-label')).toContain('9.0分 · 符合模式')
+})
