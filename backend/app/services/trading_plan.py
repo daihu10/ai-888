@@ -182,6 +182,7 @@ class PlanDraft(PlanModel):
     execution_review: Review = Field(default_factory=Review)
     ma5_review: Review = Field(default_factory=Review)
     ma20_review: Review = Field(default_factory=Review)
+    self_assessment: Note = ""
 
     @model_validator(mode="after")
     def unique_holdings(self):

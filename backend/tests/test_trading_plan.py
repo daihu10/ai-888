@@ -46,6 +46,7 @@ def test_daily_roundtrip_and_average(client):
         "execution_review": {"answer": True, "score": 10},
         "ma5_review": {"answer": True, "reason": "等待突破", "stop_loss": "跌破10元", "score": 8},
         "ma20_review": {"answer": False, "score": 7},
+        "self_assessment": "计划执行偏差：追高买入，下次等待回踩确认。",
     }
     response = client.put(url, json=payload)
     assert response.status_code == 200
@@ -57,6 +58,7 @@ def test_daily_roundtrip_and_average(client):
     assert saved["holdings"][0]["above_ma10"] is True
     assert saved["holdings"][0]["above_ma20"] is False
     assert saved["holdings"][1]["above_ma10"] is None
+    assert saved["self_assessment"] == "计划执行偏差：追高买入，下次等待回踩确认。"
     assert client.get(url).json() == saved
     assert plans.get_plan(date(2026, 11, 19)).model_dump(mode="json") == saved
     assert client.get("/api/custom/trading-plan/2026-11-20").json()["holdings"] == []
@@ -198,6 +200,7 @@ def test_old_plan_without_new_ma_fields_remains_editable(client):
     stored.pop("holding_execution_followed")
     stored.pop("target_stocks_followed")
     stored.pop("market_sentiment")
+    stored.pop("self_assessment")
     for key in ("above_ma10", "above_ma20"):
         stored["holdings"][0].pop(key)
     path.write_text(json.dumps(stored), encoding="utf-8")
@@ -206,6 +209,7 @@ def test_old_plan_without_new_ma_fields_remains_editable(client):
     assert loaded["holding_execution_followed"] is None
     assert loaded["target_stocks_followed"] is None
     assert loaded["market_sentiment"] is None
+    assert loaded["self_assessment"] == ""
     assert loaded == saved
     assert client.put(url, json={"revision": saved["revision"], "holdings": loaded["holdings"]}).status_code == 200
 

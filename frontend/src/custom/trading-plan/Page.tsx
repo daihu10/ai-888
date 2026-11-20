@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Import, Loader2, RefreshCw, Save, ShieldAlert, Trash2 } from 'lucide-react'
@@ -16,6 +16,7 @@ const inputClass = 'w-full min-w-0 rounded-btn border border-border/70 bg-base p
 const buttonClass = 'inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-btn border border-border px-2.5 text-xs transition-colors hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50'
 const holdingColumns = 'xl:grid-cols-[110px_repeat(2,108px)_repeat(3,112px)_minmax(0,1fr)_minmax(0,1fr)_28px]'
 const reviewColumns = 'lg:grid-cols-[minmax(250px,1fr)_minmax(0,1fr)_minmax(0,1fr)_90px]'
+const AUTO_SAVE_KEY = 'trading-plan-auto-save'
 
 function today() {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
@@ -43,6 +44,11 @@ function validDate(value: string | null): value is string {
 function draftOf(plan: TradingPlan): TradingPlanDraft {
   const { schema_version: _schema, date: _date, updated_at: _updated, overall_score: _score, ...draft } = plan
   return draft
+}
+
+function isTextEntry(target: EventTarget | null) {
+  return target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement
+    && ['text', 'search', 'number', 'email', 'url', 'tel', 'password'].includes(target.type)
 }
 
 function PriceCell({ label, price, status, date, title, valueClassName }: { label: string; price?: number | null; status: string; date?: string | null; title?: string; valueClassName?: string }) {
@@ -123,10 +129,13 @@ function ReviewRow({ title, value, onChange, details = false, dangerValue = fals
   </div>
 }
 
-function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { initial: TradingPlan; onDirty: (value: boolean) => void; onPending: (value: boolean) => void; onNegativeCount: (value: number) => void; reload: () => void }) {
+function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCount, reload }: { initial: TradingPlan; autoSaveEnabled: boolean; onDirty: (value: boolean) => void; onPending: (value: boolean) => void; onNegativeCount: (value: number) => void; reload: () => void }) {
   const [draft, setDraft] = useState(() => draftOf(initial))
   const [feedback, setFeedback] = useState('')
   const [importDate, setImportDate] = useState(() => previousDay(initial.date))
+  const [textEditing, setTextEditing] = useState(false)
+  const [composing, setComposing] = useState(false)
+  const lastAutoSaveAttempt = useRef<string | null>(null)
   const queryClient = useQueryClient()
   const symbols = draft.holdings.map(holding => holding.symbol).sort()
   const quotes = useQuery({
@@ -151,12 +160,14 @@ function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { 
   const overall = scores.every((score): score is number => score !== null)
     ? (scores.reduce((sum, score) => sum + score, 0) / 3).toFixed(1) : null
   const save = useMutation({
-    mutationFn: () => api.saveTradingPlan(initial.date, draft),
-    onSuccess: plan => {
+    mutationFn: ({ snapshot }: { snapshot: TradingPlanDraft; origin: 'manual' | 'auto' }) => api.saveTradingPlan(initial.date, snapshot),
+    onSuccess: (plan, { origin }) => {
+      // A background save must not replace text entered while the request was in flight.
+      setDraft(current => ({ ...current, revision: plan.revision }))
       queryClient.setQueryData(QK.tradingPlan(initial.date), plan)
       void queryClient.invalidateQueries({ queryKey: QK.tradingPlanDates })
       void queryClient.invalidateQueries({ queryKey: QK.tradingPlanScores(Number(initial.date.slice(0, 4))) })
-      toast('交易计划已保存', 'success')
+      if (origin === 'manual') toast('交易计划已保存', 'success')
     },
   })
   const sync = useMutation({
@@ -203,9 +214,20 @@ function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { 
     },
   })
   const pending = save.isPending || sync.isPending || importHoldings.isPending
+  const editingLocked = sync.isPending || importHoldings.isPending || save.isPending && save.variables?.origin === 'manual'
+  const { mutate: saveDraft } = save
   useEffect(() => { onDirty(dirty) }, [dirty, onDirty])
   useEffect(() => { onPending(pending) }, [pending, onPending])
   useEffect(() => { onNegativeCount(negativeCount) }, [negativeCount, onNegativeCount])
+  useEffect(() => {
+    const snapshot = JSON.stringify(draft)
+    if (!autoSaveEnabled || !dirty || pending || textEditing || composing || lastAutoSaveAttempt.current === snapshot) return
+    const timer = window.setTimeout(() => {
+      lastAutoSaveAttempt.current = snapshot
+      saveDraft({ snapshot: draft, origin: 'auto' })
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [autoSaveEnabled, dirty, draft, pending, textEditing, composing, saveDraft])
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = '' } }
     window.addEventListener('beforeunload', warn)
@@ -216,16 +238,24 @@ function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { 
     setDraft(current => ({ ...current, [key]: value }))
   }
 
-  return <form id="trading-plan-form" className="space-y-3" onSubmit={e => { e.preventDefault(); if (!pending) save.mutate() }}>
+  return <form id="trading-plan-form" className="space-y-3"
+    onFocusCapture={event => { setTextEditing(isTextEntry(event.target)) }}
+    onBlurCapture={event => {
+      setTextEditing(event.currentTarget.contains(event.relatedTarget) && isTextEntry(event.relatedTarget))
+      setComposing(false)
+    }}
+    onCompositionStartCapture={() => setComposing(true)}
+    onCompositionEndCapture={() => setComposing(false)}
+    onSubmit={e => { e.preventDefault(); if (!pending) saveDraft({ snapshot: draft, origin: 'manual' }) }}>
       <div className="flex items-center gap-2 text-xs text-muted" role="status">
         <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${dirty ? 'bg-warning' : initial.revision ? 'bg-accent' : 'bg-muted/50'}`} />
-        {dirty ? '有未保存的修改' : initial.updated_at ? `已保存 · ${new Date(initial.updated_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}` : '当天暂无计划，可以开始填写；支持保存未填完的草稿。'}
+        {save.isPending ? '正在保存…' : dirty ? `有未保存的修改${autoSaveEnabled && (textEditing || composing) ? ' · 输入结束并离开输入框后自动保存' : ''}` : initial.updated_at ? `已保存 · ${new Date(initial.updated_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}` : '当天暂无计划，可以开始填写；支持保存未填完的草稿。'}
       </div>
     {save.isError && <div role="alert" className="rounded-btn border border-danger/30 bg-danger/5 p-2 text-xs text-danger">
       保存失败：{save.error.message}。当前填写内容已保留。
       <button type="button" disabled={pending} className="ml-3 underline" onClick={() => { if (window.confirm('重新加载会丢弃当前未保存的修改，是否继续？')) reload() }}>重新加载已保存版本</button>
     </div>}
-    <fieldset disabled={pending} className="min-w-0 space-y-3 disabled:opacity-60">
+    <fieldset disabled={editingLocked} className="min-w-0 space-y-3 disabled:opacity-60">
       <Section title="市场环境" extra={<span className="text-xs text-muted">均线状态手动确认</span>}>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
           <YesNo label="大盘是否在5天线上" value={draft.market_above_ma5} onChange={v => update('market_above_ma5', v)} />
@@ -250,7 +280,7 @@ function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { 
         </div>
       </Section>
       <Section title={`持仓标的 · ${draft.holdings.length} 只`} action={<>
-        <button type="button" className={`${buttonClass} h-7 border-accent/40 text-accent`} disabled={initial.date !== today() || symbols.length === 0} title="同步当天最新行情并回填5/10/20日线选项，随后请保存计划" onClick={() => sync.mutate()}>
+        <button type="button" className={`${buttonClass} h-7 border-accent/40 text-accent`} disabled={pending || initial.date !== today() || symbols.length === 0} title="同步当天最新行情并回填5/10/20日线选项，随后请保存计划" onClick={() => sync.mutate()}>
           <RefreshCw aria-hidden="true" className={`h-3.5 w-3.5 ${sync.isPending ? 'animate-spin' : ''}`} />{sync.isPending ? '同步中…' : '同步'}
         </button>
         {initial.date !== today() && <span className="text-xs text-muted">仅当天可同步</span>}
@@ -312,6 +342,23 @@ function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { 
         {quotes.isError && symbols.length > 0 && <p role="alert" className="mt-1 text-xs text-danger">行情加载失败{quotes.data ? '，已保留最近有效价格' : '，可继续填写计划'}。<button type="button" className="ml-2 underline" onClick={() => void quotes.refetch()}>重试行情</button></p>}
         <p role="status" className={feedback ? 'mt-1 text-xs text-accent' : draft.holdings.length === 0 ? 'py-3 text-center text-xs text-muted' : 'sr-only'}>{feedback || (draft.holdings.length === 0 ? '尚未添加持仓标的。' : '逐只填写均线状态、持仓理由与止损线。')}</p>
       </Section>
+      <Section title="操作评分" extra={<div className="flex items-center gap-3 text-xs" role="status">
+        <span className="text-muted">{overall ? '三项平均 · 满分10分' : `已完成 ${scores.filter(v => v !== null).length}/3 项评分`}</span>
+        <span className="rounded bg-accent/10 px-2 py-1 text-accent">综合评分 <strong className="ml-1 font-mono text-sm">{overall ? `${overall} / 10` : '待完成'}</strong></span>
+      </div>}>
+        <div aria-hidden="true" className={`hidden items-center gap-2 pb-1 text-xs text-muted lg:grid ${reviewColumns}`}>
+          <span>自查项目</span><span>持股理由</span><span>什么时候无条件止损</span><span>评分 · 1–10</span>
+        </div>
+        <ReviewRow title="1. 是否按照计划执行" value={draft.execution_review} onChange={v => update('execution_review', v)} />
+        <ReviewRow title="2. 是否持有非5天线上个股" value={draft.ma5_review} onChange={v => update('ma5_review', v)} details dangerValue />
+        <ReviewRow title="3. 是否持有非20天线上个股" value={draft.ma20_review} onChange={v => update('ma20_review', v)} details dangerValue />
+      </Section>
+      <Section title="自评与总结">
+        <label className="block">
+          <span className="sr-only">自评与总结</span>
+          <textarea aria-label="自评与总结" maxLength={5000} rows={4} value={draft.self_assessment} onChange={event => update('self_assessment', event.target.value)} className={`${inputClass} resize-y leading-5`} placeholder="记录当日交易复盘、执行得失与改进方向" />
+        </label>
+      </Section>
       <Section title="明日交易计划">
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="flex min-w-0 flex-wrap items-end gap-2">
@@ -324,17 +371,6 @@ function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { 
           </div>
         </div>
       </Section>
-      <Section title="操作评分" extra={<div className="flex items-center gap-3 text-xs" role="status">
-        <span className="text-muted">{overall ? '三项平均 · 满分10分' : `已完成 ${scores.filter(v => v !== null).length}/3 项评分`}</span>
-        <span className="rounded bg-accent/10 px-2 py-1 text-accent">综合评分 <strong className="ml-1 font-mono text-sm">{overall ? `${overall} / 10` : '待完成'}</strong></span>
-      </div>}>
-        <div aria-hidden="true" className={`hidden items-center gap-2 pb-1 text-xs text-muted lg:grid ${reviewColumns}`}>
-          <span>自查项目</span><span>持股理由</span><span>什么时候无条件止损</span><span>评分 · 1–10</span>
-        </div>
-        <ReviewRow title="1. 是否按照计划执行" value={draft.execution_review} onChange={v => update('execution_review', v)} />
-        <ReviewRow title="2. 是否持有非5天线上个股" value={draft.ma5_review} onChange={v => update('ma5_review', v)} details dangerValue />
-        <ReviewRow title="3. 是否持有非20天线上个股" value={draft.ma20_review} onChange={v => update('ma20_review', v)} details dangerValue />
-      </Section>
     </fieldset>
   </form>
 }
@@ -342,6 +378,9 @@ function PlanEditor({ initial, onDirty, onPending, onNegativeCount, reload }: { 
 export function TradingPlanPage() {
   const [params, setParams] = useSearchParams()
   const day = validDate(params.get('date')) ? params.get('date')! : defaultPlanDate()
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
+    try { return window.localStorage.getItem(AUTO_SAVE_KEY) !== 'false' } catch { return true }
+  })
   const [dirty, setDirty] = useState(false)
   const [pending, setPending] = useState(false)
   const [negativeCount, setNegativeCount] = useState(0)
@@ -350,6 +389,9 @@ export function TradingPlanPage() {
     queryKey: QK.tradingPlan(day), queryFn: () => api.tradingPlan(day),
     staleTime: 0, refetchOnMount: 'always', refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false,
   })
+  useEffect(() => {
+    try { window.localStorage.setItem(AUTO_SAVE_KEY, String(autoSaveEnabled)) } catch { /* local preference is optional */ }
+  }, [autoSaveEnabled])
   function changeDate(next: string) {
     if (!validDate(next) || next === day || pending) return
     if (dirty && !window.confirm('当前计划尚未保存，切换日期将丢弃修改。是否继续？')) return
@@ -359,7 +401,7 @@ export function TradingPlanPage() {
   }
   return <div className="flex h-full min-h-0 flex-col">
     <PageHeader className="grid shrink-0 grid-cols-1 gap-x-3 gap-y-2 bg-base py-2 pl-14 sm:pl-5 xl:grid-cols-[minmax(0,1fr)_auto] [&>div:first-child>div]:flex-wrap" title="交易计划" titleExtra={<>
-      <aside aria-label="交易铁律" className="flex min-w-0 max-w-full items-center gap-3 rounded-btn border border-danger/60 border-l-4 border-l-danger bg-danger/10 px-3 py-2 shadow-sm sm:ml-2">
+      <aside aria-label="交易铁律" className="trading-plan-danger-frame flex min-w-0 max-w-full items-center gap-3 rounded-btn border border-danger/60 border-l-4 border-l-danger bg-danger/10 px-3 py-2 shadow-sm sm:ml-2">
         <div className="flex shrink-0 flex-col items-center gap-1 border-r border-danger/30 pr-3 text-red-700 dark:text-red-300">
           <ShieldAlert aria-hidden="true" className="h-5 w-5" strokeWidth={2.5} />
           <span className="whitespace-nowrap text-xs font-bold tracking-widest">交易铁律</span>
@@ -369,7 +411,7 @@ export function TradingPlanPage() {
           <strong className="block text-base font-extrabold tracking-wide text-red-700 dark:text-red-300 sm:text-lg">保住本金，才是王道。</strong>
         </p>
       </aside>
-      {!plan.isFetching && !plan.isPending && !plan.isError && negativeCount > 0 && <div role="status" aria-atomic="true" aria-label="模式检查提醒" className="flex min-h-[66px] min-w-0 max-w-full flex-1 basis-[320px] items-center gap-3 rounded-btn border-2 border-danger/80 border-l-[6px] border-l-danger bg-danger/15 px-3 py-2 shadow-sm ring-1 ring-danger/10">
+      {!plan.isFetching && !plan.isPending && !plan.isError && negativeCount > 0 && <div role="status" aria-atomic="true" aria-label="模式检查提醒" className="trading-plan-danger-frame flex min-h-[66px] min-w-0 max-w-full flex-1 basis-[320px] items-center gap-3 rounded-btn border-2 border-danger/80 border-l-[6px] border-l-danger bg-danger/15 px-3 py-2 shadow-sm ring-1 ring-danger/10">
         <div aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-btn bg-red-700 text-white dark:bg-red-400 dark:text-red-950">
           <AlertTriangle className="h-6 w-6" strokeWidth={2.5} />
         </div>
@@ -377,6 +419,12 @@ export function TradingPlanPage() {
       </div>}
     </>} right={
         <div role="toolbar" aria-label="交易计划操作" className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
+          <button type="button" role="switch" aria-checked={autoSaveEnabled} title="开启后，修改内容会自动保存；关闭后请手动保存计划" onClick={() => setAutoSaveEnabled(value => !value)} className={`${buttonClass} h-8 min-w-[116px] justify-between gap-2 px-2.5 ${autoSaveEnabled ? 'border-accent/50 bg-accent/10 font-semibold text-accent' : 'text-secondary'}`}>
+            <span>自动保存</span>
+            <span aria-hidden="true" className={`relative inline-flex h-[18px] w-8 shrink-0 rounded-full transition-colors ${autoSaveEnabled ? 'bg-accent' : 'bg-muted/50'}`}>
+              <span className={`absolute top-[3px] h-3 w-3 rounded-full bg-white shadow-sm transition-[left] ${autoSaveEnabled ? 'left-[14px]' : 'left-[2px]'}`} />
+            </span>
+          </button>
           <DatePicker ariaLabel="计划日期" value={day} onChange={changeDate} disabled={pending} buttonClassName="h-8" />
           <button type="button" aria-pressed={day === previousDay(today())} className={`${buttonClass} ${day === previousDay(today()) ? 'border-accent bg-accent/10 font-semibold text-accent ring-1 ring-accent/40 disabled:opacity-100' : ''}`} disabled={pending || day === previousDay(today())} onClick={() => changeDate(previousDay(today()))}>昨天</button>
           <button type="button" aria-pressed={day === today()} className={`${buttonClass} ${day === today() ? 'border-accent bg-accent/10 font-semibold text-accent ring-1 ring-accent/40 disabled:opacity-100' : ''}`} disabled={pending || day === today()} onClick={() => changeDate(today())}>今天</button>
@@ -398,7 +446,7 @@ export function TradingPlanPage() {
       <div className="space-y-3 px-4 py-3">
         {plan.isFetching || plan.isPending ? <div role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-muted"><Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在加载 {day} 的计划…</div>
           : plan.isError ? <div role="alert" className="rounded-card border border-danger/30 p-5 text-sm text-danger">计划加载失败：{plan.error.message}<button type="button" className={`${buttonClass} ml-3`} onClick={() => void plan.refetch()}>重试</button></div>
-            : <PlanEditor key={`${day}:${plan.data.revision}`} initial={plan.data} onDirty={setDirty} onPending={setPending} onNegativeCount={setNegativeCount} reload={() => { setDirty(false); setNegativeCount(0); void plan.refetch() }} />}
+            : <PlanEditor key={day} initial={plan.data} autoSaveEnabled={autoSaveEnabled} onDirty={setDirty} onPending={setPending} onNegativeCount={setNegativeCount} reload={() => { setDirty(false); setNegativeCount(0); void plan.refetch() }} />}
         <ScoreCalendar day={day} disabled={pending} onSelect={changeDate} />
       </div>
     </div>

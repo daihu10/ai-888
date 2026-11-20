@@ -20,6 +20,7 @@ vi.mock('@/components/financials/StockFinancialSearch', () => ({
 let container: HTMLDivElement
 let root: Root
 let queryClient: QueryClient
+const testStorage = new Map<string, string>()
 const review = () => ({ answer: null, reason: '', stop_loss: '', score: null })
 function empty(day = '2026-11-19'): TradingPlan {
   return {
@@ -29,10 +30,18 @@ function empty(day = '2026-11-19'): TradingPlan {
     limit_up_count: null, limit_down_count: null, core_theme: '', secondary_theme: '', holding_execution: '', target_stocks: '',
     holding_execution_followed: null, target_stocks_followed: null,
     execution_review: review(), ma5_review: review(), ma20_review: review(),
+    self_assessment: '',
   }
 }
 beforeEach(() => {
   vi.clearAllMocks()
+  testStorage.clear()
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: {
+    getItem: (key: string) => testStorage.get(key) ?? null,
+    setItem: (key: string, value: string) => { testStorage.set(key, String(value)) },
+    removeItem: (key: string) => { testStorage.delete(key) },
+  } })
+  window.localStorage.setItem('trading-plan-auto-save', 'false')
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-11-19T15:10:00+08:00'))
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -109,12 +118,140 @@ it('adds holdings once, edits stop loss and saves all three scores with the draf
   await click(button('保存计划'))
   expect(mockApi.saveTradingPlan).toHaveBeenCalledWith('2026-11-19', expect.objectContaining({
     limit_down_count: 12,
+    self_assessment: '',
     holdings: [expect.objectContaining({ symbol: '600000.SH', stop_loss: '跌破10元', above_ma5: true, above_ma10: false, above_ma20: true })],
     execution_review: expect.objectContaining({ score: 10 }),
     ma5_review: expect.objectContaining({ score: 8 }), ma20_review: expect.objectContaining({ score: 7 }),
   }))
   expect(container.textContent).toContain('已保存')
   expect([...container.querySelectorAll<HTMLInputElement>('input[type="number"]')].find(input => input.closest('label')?.textContent === '跌停数')!.value).toBe('12')
+})
+
+it('saves the daily self-assessment and restores it when revisiting that date', async () => {
+  const saved = new Map<string, TradingPlan>()
+  mockApi.tradingPlan.mockImplementation(async (day: string) => saved.get(day) ?? empty(day))
+  mockApi.saveTradingPlan.mockImplementation(async (day: string, draft: TradingPlanDraft) => {
+    const plan = { ...empty(day), ...draft, revision: `saved-${day}` }
+    saved.set(day, plan)
+    return plan
+  })
+  await render()
+  const summary = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="自评与总结"]')!
+  await change(summary, '计划执行偏差：追高买入。下次等待回踩确认后再操作。')
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledWith('2026-11-19', expect.objectContaining({
+    self_assessment: '计划执行偏差：追高买入。下次等待回踩确认后再操作。',
+  }))
+
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  await selectDate('2026-11-18')
+  await selectDate('2026-11-19')
+  expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="自评与总结"]')!.value)
+    .toBe('计划执行偏差：追高买入。下次等待回踩确认后再操作。')
+})
+
+it('autosaves by default, remembers the setting, and retains manual save when disabled', async () => {
+  window.localStorage.removeItem('trading-plan-auto-save')
+  await render()
+  const autoSave = () => container.querySelector<HTMLButtonElement>('[role="switch"]')!
+  expect(autoSave().getAttribute('aria-checked')).toBe('true')
+  expect(autoSave().className).toContain('min-w-[116px]')
+  expect(autoSave().querySelector('[aria-hidden="true"]')?.className).toContain('w-8')
+  expect(autoSave().querySelector('[aria-hidden="true"] span')?.className).toContain('left-[14px]')
+
+  await change(container.querySelector<HTMLSelectElement>('select[aria-label="市场情绪"]')!, '强势')
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(1)
+
+  await click(autoSave())
+  expect(autoSave().getAttribute('aria-checked')).toBe('false')
+  expect(autoSave().querySelector('[aria-hidden="true"] span')?.className).toContain('left-[2px]')
+  expect(window.localStorage.getItem('trading-plan-auto-save')).toBe('false')
+  await change(container.querySelector<HTMLSelectElement>('select[aria-label="市场情绪"]')!, '震荡')
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(1)
+
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(2)
+  expect(mockApi.saveTradingPlan).toHaveBeenLastCalledWith('2026-11-19', expect.objectContaining({ market_sentiment: '震荡' }))
+})
+
+it('waits until text editing ends before autosaving multiline text and IME input', async () => {
+  window.localStorage.removeItem('trading-plan-auto-save')
+  await render()
+  const summary = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="自评与总结"]')!
+  await act(async () => {
+    summary.focus()
+    summary.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+  })
+  await change(summary, '第一行\n第二行输入中')
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+  expect(document.activeElement).toBe(summary)
+  await act(async () => {
+    summary.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+  })
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+  // Moving between text fields remains one editing session.
+  const next = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="持股执行"]')!
+  await act(async () => { next.focus() })
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+  await act(async () => { next.blur() })
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(1)
+  expect(mockApi.saveTradingPlan).toHaveBeenLastCalledWith('2026-11-19', expect.objectContaining({ self_assessment: '第一行\n第二行输入中' }))
+})
+
+it('keeps editing and focus intact when an earlier autosave finishes, then saves the latest draft with its new revision', async () => {
+  window.localStorage.removeItem('trading-plan-auto-save')
+  let finish!: (value: TradingPlan) => void
+  mockApi.saveTradingPlan.mockImplementationOnce(() => new Promise<TradingPlan>(resolve => { finish = resolve }))
+  await render()
+  await change(container.querySelector<HTMLSelectElement>('select[aria-label="市场情绪"]')!, '强势')
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(1)
+  const summary = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="自评与总结"]')!
+  expect(summary.closest('fieldset[disabled]')).toBeNull()
+  await act(async () => { summary.focus() })
+  await change(summary, '保存期间继续写入的新内容')
+  summary.setSelectionRange(3, 3)
+  const submitted = mockApi.saveTradingPlan.mock.calls[0][1] as TradingPlanDraft
+  await act(async () => finish({ ...empty(), ...submitted, revision: 'revision-1' }))
+  await flush()
+  expect(container.querySelector('textarea[aria-label="自评与总结"]')).toBe(summary)
+  expect(document.activeElement).toBe(summary)
+  expect(summary.selectionStart).toBe(3)
+  expect(summary.value).toBe('保存期间继续写入的新内容')
+  expect(container.textContent).toContain('有未保存的修改')
+  await act(async () => { summary.blur() })
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(2)
+  expect(mockApi.saveTradingPlan).toHaveBeenLastCalledWith('2026-11-19', expect.objectContaining({ revision: 'revision-1', self_assessment: '保存期间继续写入的新内容' }))
+})
+
+it('cancels queued autosaves when disabled and retains failed drafts without retry loops', async () => {
+  window.localStorage.removeItem('trading-plan-auto-save')
+  await render()
+  const sentiment = container.querySelector<HTMLSelectElement>('select[aria-label="市场情绪"]')!
+  await change(sentiment, '强势')
+  await click(container.querySelector<HTMLButtonElement>('[role="switch"]')!)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).not.toHaveBeenCalled()
+
+  mockApi.saveTradingPlan.mockRejectedValueOnce(new Error('网络中断'))
+  await click(container.querySelector<HTMLButtonElement>('[role="switch"]')!)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  await flush()
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(1)
+  expect(container.textContent).toContain('保存失败：网络中断')
+  expect(sentiment.value).toBe('强势')
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)) })
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(1)
+  await click(button('保存计划'))
+  expect(mockApi.saveTradingPlan).toHaveBeenCalledTimes(2)
+  expect(mockApi.saveTradingPlan).toHaveBeenLastCalledWith('2026-11-19', expect.objectContaining({ market_sentiment: '强势' }))
 })
 
 it('colors holding names and symbols by the 10-day and 20-day line status', async () => {
@@ -304,7 +441,7 @@ it('highlights unsafe answers with reversed non-MA review polarity, preserves th
   const groups = [...container.querySelectorAll<HTMLFieldSetElement>('fieldset[aria-label]')]
   expect(groups).toHaveLength(10)
   for (const [index, group] of groups.entries()) {
-    const unsafe = group.querySelectorAll<HTMLInputElement>('input[type="radio"]')[index >= 8 ? 0 : 1]
+    const unsafe = group.querySelectorAll<HTMLInputElement>('input[type="radio"]')[group.getAttribute('aria-label')?.includes('是否持有非') ? 0 : 1]
     await click(unsafe)
     expect(unsafe.closest('label')!.className).toContain('border-danger')
     expect(unsafe.className).toContain('accent-danger')
@@ -313,14 +450,16 @@ it('highlights unsafe answers with reversed non-MA review polarity, preserves th
   await click(button('保存计划'))
   expect(warning()?.textContent).toBe('存在不符合模式的交易 10 项请认真核对，给出理由！防止下次再犯错！')
   expect(warning()?.closest('header')).not.toBeNull()
+  expect(warning()?.className).toContain('trading-plan-danger-frame')
+  expect(container.querySelector('aside')?.className).toContain('trading-plan-danger-frame')
   expect(container.querySelector('form')!.contains(warning())).toBe(false)
   expect(container.textContent).toContain('已保存')
   expect(mockApi.saveTradingPlan).toHaveBeenCalledWith('2026-11-19', expect.objectContaining({
     holding_execution_followed: false, target_stocks_followed: false,
     ma5_review: expect.objectContaining({ answer: true }), ma20_review: expect.objectContaining({ answer: true }),
   }))
-  for (const [index, group] of [...container.querySelectorAll<HTMLFieldSetElement>('fieldset[aria-label]')].entries()) {
-    const safe = group.querySelectorAll<HTMLInputElement>('input[type="radio"]')[index >= 8 ? 1 : 0]
+  for (const group of container.querySelectorAll<HTMLFieldSetElement>('fieldset[aria-label]')) {
+    const safe = group.querySelectorAll<HTMLInputElement>('input[type="radio"]')[group.getAttribute('aria-label')?.includes('是否持有非') ? 1 : 0]
     await click(safe)
     expect(safe.closest('label')!.className).not.toContain('border-danger')
     expect(group.querySelector('input:checked')!.closest('label')!.className).not.toContain('border-danger')

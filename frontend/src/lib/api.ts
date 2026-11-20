@@ -2842,6 +2842,7 @@ export interface TradingPlanDraft {
   execution_review: TradingPlanReview
   ma5_review: TradingPlanReview
   ma20_review: TradingPlanReview
+  self_assessment: string
 }
 
 export interface TradingPlan extends TradingPlanDraft {
