@@ -174,6 +174,16 @@ def clear_assets(root: Path, assets: set[str]) -> None:
         _save(root, old, [e for e in old["entries"] if e["asset_type"] not in assets])
 
 
+def prune_before(root: Path, start: date) -> int:
+    """Drop repair markers for history intentionally removed by retention."""
+    with _LOCK:
+        old = snapshot(root)
+        entries = [entry for entry in old["entries"] if entry["day"] >= start.isoformat()]
+        removed = len(old["entries"]) - len(entries)
+        _save(root, old, entries)
+        return removed
+
+
 def assert_usable(
     root: Path, asset_type: str = "stock", *, symbols: list[str] | None = None, end: date | None = None,
     enriched_only: bool = False,

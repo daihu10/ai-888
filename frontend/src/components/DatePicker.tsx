@@ -19,6 +19,8 @@ interface DatePickerProps {
   className?: string
   buttonClassName?: string
   align?: 'left' | 'right'
+  disabled?: boolean
+  ariaLabel?: string
 }
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
@@ -48,6 +50,8 @@ export function DatePicker({
   className = '',
   buttonClassName = '',
   align = 'right',
+  disabled = false,
+  ariaLabel,
 }: DatePickerProps) {
   const [open, setOpen] = useState(false)
   const [showYearPicker, setShowYearPicker] = useState(false)
@@ -71,6 +75,7 @@ export function DatePicker({
 
   // 打开弹层: 按钮的视口坐标计算 + 智能方向翻转 + 水平边界裁剪
   const handleOpen = () => {
+    if (disabled) return
     if (open) { setOpen(false); return }
     if (!btnRef.current) { setOpen(true); return }
     const r = btnRef.current.getBoundingClientRect()
@@ -87,6 +92,8 @@ export function DatePicker({
     setOpen(true)
   }
 
+  useEffect(() => { if (disabled) setOpen(false) }, [disabled])
+
   // 点击外部关闭 (Portal 下弹层不在 ref 树内, 分别判断按钮与弹层)
   useEffect(() => {
     if (!open) return
@@ -96,8 +103,18 @@ export function DatePicker({
       if (popRef.current?.contains(t)) return
       setOpen(false)
     }
+    const escape = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      setOpen(false)
+      btnRef.current?.focus()
+    }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', escape)
+    }
   }, [open])
 
   // 滚动 / resize 时关闭弹层 (fixed 定位不跟随滚动,关闭比重算更可靠)
@@ -161,12 +178,15 @@ export function DatePicker({
       <button
         ref={btnRef}
         type="button"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-expanded={open}
         onClick={handleOpen}
         className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-input border border-border
           bg-elevated hover:border-accent/50 text-xs text-foreground num
-          focus:outline-none focus:border-accent/60 transition-colors duration-150 cursor-pointer ${buttonClassName}`}
+          focus:outline-none focus:border-accent/60 focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${buttonClassName}`}
       >
-        <Calendar className="h-3.5 w-3.5 text-accent" />
+        <Calendar aria-hidden="true" className="h-3.5 w-3.5 text-accent" />
         <span className={value ? undefined : 'text-muted'}>{displayLabel}</span>
       </button>
 
@@ -188,6 +208,7 @@ export function DatePicker({
             <div className="flex items-center justify-between mb-2">
               <button
                 type="button"
+                aria-label={showYearPicker ? '前12年' : '上个月'}
                 onClick={showYearPicker ? () => setViewYear(viewYear - 12) : prevMonth}
                 className="p-1 rounded-btn hover:bg-elevated text-secondary hover:text-foreground transition-colors"
               >
@@ -205,6 +226,7 @@ export function DatePicker({
               </button>
               <button
                 type="button"
+                aria-label={showYearPicker ? '后12年' : '下个月'}
                 onClick={showYearPicker ? () => setViewYear(viewYear + 12) : nextMonth}
                 className="p-1 rounded-btn hover:bg-elevated text-secondary hover:text-foreground transition-colors"
               >

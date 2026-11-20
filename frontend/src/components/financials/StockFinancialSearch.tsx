@@ -10,6 +10,8 @@ interface Props {
   onSelect: (symbol: string, name: string) => void
   /** 搜索资产类型, 逗号分隔 (默认 'stock')。如 'stock,index' */
   assetTypes?: string
+  ariaLabel?: string
+  compact?: boolean
 }
 
 /**
@@ -17,7 +19,7 @@ interface Props {
  * 复用 instrumentSearch 后端(代码 / 名称模糊匹配),单选即跳转该股财务详情。
  * 模式对齐 Watchlist.StockSearchBox:useQuery + 外部点击关闭 + 键盘导航。
  */
-export function StockFinancialSearch({ onSelect, assetTypes }: Props) {
+export function StockFinancialSearch({ onSelect, assetTypes, ariaLabel, compact = false }: Props) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [activeIdx, setActiveIdx] = useState(-1)
@@ -52,6 +54,7 @@ export function StockFinancialSearch({ onSelect, assetTypes }: Props) {
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') e.preventDefault()
     if (e.key === 'Escape') { setOpen(false); return }
     if (!open || results.length === 0) return
     if (e.key === 'ArrowDown') {
@@ -70,19 +73,21 @@ export function StockFinancialSearch({ onSelect, assetTypes }: Props) {
   const trimmed = query.trim()
 
   return (
-    <div ref={containerRef} className="relative w-full max-w-xl mx-auto">
+    <div ref={containerRef} className={compact ? 'relative w-full sm:w-72' : 'relative w-full max-w-xl mx-auto'}>
       <div className="relative flex items-center">
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted pointer-events-none" />
         <input
           ref={inputRef}
           type="text"
-          placeholder="输入股票代码或名称，如 600000 / 浦发"
+          aria-label={ariaLabel}
+          maxLength={50}
+          placeholder={compact ? '添加股票 · 代码 / 名称 / 拼音' : '输入股票代码或名称，如 600000 / 浦发'}
           value={query}
           onChange={(e) => { setQuery(e.target.value); setOpen(true); setActiveIdx(-1) }}
           onFocus={() => { if (trimmed) setOpen(true) }}
           onKeyDown={handleKeyDown}
           // 较宽、更醒目 —— 作为财务页主入口
-          className="w-full h-11 pl-11 pr-10 rounded-card bg-surface border border-border text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50 focus:bg-base transition-colors"
+          className={`w-full ${compact ? 'h-8 pl-10 pr-8 rounded-btn text-xs' : 'h-11 pl-11 pr-10 rounded-card text-sm'} bg-surface border border-border text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50 focus:bg-base transition-colors`}
         />
         {search.isFetching && (
           <Loader2 className="absolute right-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted animate-spin" />
@@ -102,6 +107,11 @@ export function StockFinancialSearch({ onSelect, assetTypes }: Props) {
               <div className="px-4 py-6 flex items-center justify-center gap-2 text-xs text-muted">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 搜索中…
+              </div>
+            ) : search.isError ? (
+              <div role="alert" className="px-4 py-6 text-center text-xs text-danger">
+                股票搜索失败，请重试
+                <button type="button" className="ml-2 underline" onClick={() => void search.refetch()}>重试</button>
               </div>
             ) : results.length === 0 ? (
               <div className="px-4 py-6 text-center text-xs text-muted">

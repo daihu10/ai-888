@@ -147,6 +147,23 @@ afterEach(async () => {
   root = null
 })
 
+it('requests the selected date again when it changes', async () => {
+  apiMock.sectorRotation.mockResolvedValue(payload())
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  const render = (date: string) => root!.render(
+    <QueryClientProvider client={client}>
+      <SectorRotationCard kind="concept" date={date} />
+    </QueryClientProvider>,
+  )
+  await act(async () => render('2026-10-20'))
+  await vi.waitFor(() => expect(apiMock.sectorRotation).toHaveBeenCalledWith(expect.objectContaining({ date: '2026-10-20' })))
+  await act(async () => render('2026-10-21'))
+  await vi.waitFor(() => expect(apiMock.sectorRotation).toHaveBeenCalledWith(expect.objectContaining({ date: '2026-10-21' })))
+})
+
 // ===== 纯函数 =====
 
 it('computeLeaderReigns: 逐列 top 行变化即易主, null 跳过, 窗口开局领涨 prevRowIdx=null', () => {

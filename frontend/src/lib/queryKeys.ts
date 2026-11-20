@@ -12,6 +12,7 @@ export const DAILY_DATA_QUERY_PREFIXES = new Set([
   'screener-cached', 'screener-kline-batch', 'market-snapshot', 'overview-market',
   'index-quotes', 'index-daily', 'watchlist-enriched', 'kline-batch', 'kline', 'kline-latest', 'stock-levels',
   'regime-history', 'regime-latest', 'regime-states', 'regime-coverage', 'regime-phases', 'regime-mainline',
+  'trading-plan-prices', 'trading-plan-quotes',
 ])
 
 /** 分钟落盘补拉后的体检与直接消费查询, 不影响日K/财务或独立的指数分钟数据。 */
@@ -27,6 +28,11 @@ export const EXT_DATA_QUERY_PREFIXES = new Set([
 ])
 
 export const QK = {
+  tradingPlanDates: ['trading-plan-dates'] as const,
+  tradingPlanScores: (year: number) => ['trading-plan-scores', year] as const,
+  tradingPlanQuotes: (symbols: readonly string[]) => ['trading-plan-quotes', [...new Set(symbols)].sort().join(',')] as const,
+  tradingPlanPrices: (date: string, symbols: readonly string[]) => ['trading-plan-prices', date, [...new Set(symbols)].sort().join(',')] as const,
+  tradingPlan: (date: string) => ['trading-plan', date] as const,
   dataVersions: ['data-versions'] as const,
   extensionPackages: ['extension-packages'] as const,
   // 全局 / 共享 (Layout 预取)
@@ -192,7 +198,7 @@ export const QK = {
   regimeMainline:       (kind: string, start?: string, end?: string) => ['regime-mainline', kind, start ?? '', end ?? ''] as const,
   // 板块切换 (盘中轮动, 全量分钟聚合) — 30s 前端轮询刷新; seriesKey = 自定义展示板块清单,
   // filterKey = 自动活跃榜行数与排除名单 (会改变结果的参数必须进查询键)
-  sectorRotation:       (kind: string, flow?: string, bucket?: number, seriesKey?: string, filterKey?: string) => ['sector-rotation', kind, flow ?? '', bucket ?? 5, seriesKey ?? '', filterKey ?? ''] as const,
+  sectorRotation:       (kind: string, flow?: string, bucket?: number, seriesKey?: string, filterKey?: string, date?: string) => ['sector-rotation', kind, flow ?? '', bucket ?? 5, seriesKey ?? '', filterKey ?? '', date ?? ''] as const,
   // 板块切换的指数叠加线 (核心四只, 默认上证) — 分钟取当日, 日K取昨收基准
   sectorRotationIndexMinute: (symbol: string, date?: string) => ['sector-rotation-index-minute', symbol, date ?? ''] as const,
   sectorRotationIndexDaily:  (symbol: string) => ['sector-rotation-index-daily', symbol] as const,
@@ -213,6 +219,7 @@ export const SSE_INVALIDATE_PREFIXES = [
   // 会误伤 ['watchlist'] (自选列表) 和 ['watchlist-groups'] (分组配置, 只随手动操作变化)。
   // 旧设置里的 'watchlist' 单开关由 useQuoteStream 兼容读取。
   'watchlist-quotes',
+  'trading-plan-quotes',
   'watchlist-enriched',
   'quote-status',
   'index-quotes',

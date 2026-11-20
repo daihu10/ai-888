@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { api, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
-import { klineMinuteQueryOptions, minuteRefetchInterval } from '@/lib/kline'
+import { cnToday, klineMinuteQueryOptions, minuteRefetchInterval } from '@/lib/kline'
 import type { DailySummary } from '@/lib/intraday-chart'
 import type { ChartRenderer } from '@/lib/chart-types'
 
@@ -48,6 +48,11 @@ export function StockIntradayChart({
     // 避免读到分钟增量落盘的上一轮本地分区; 历史日期后端自行忽略 live。
     ...klineMinuteQueryOptions(symbol, date ?? undefined, refetchIntervalMs != null),
     enabled: !!symbol && !!date,
+    // Historical minute bars are immutable. Keep them fresh across tab switches
+    // so reopening the chart does not repeat a slow upstream request.
+    staleTime: query => query.state.data?.rows?.length && date && date < cnToday() ? Infinity : 5_000,
+    retry: false,
+    refetchOnWindowFocus: false,
     refetchInterval: minuteRefetchInterval(refetchIntervalMs),
   })
 
@@ -134,6 +139,9 @@ export function StockIntradayChart({
       )}
       {minuteRows.length > 0 && (
         <>
+          {minute.data?.provider === 'tdxquant' && (
+            <div className="mb-1 text-[10px] text-muted">通达信分钟数据兜底</div>
+          )}
           {minute.data?.source === 'local_partial' && (
             <div className="mb-1 flex items-center gap-2 rounded border border-warning/30 bg-warning/5 px-2 py-1 text-[10px] text-warning">
               <span>

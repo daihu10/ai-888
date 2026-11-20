@@ -64,6 +64,28 @@ def test_complete_partitions_untouched(tmp_path) -> None:
     assert (enriched / "date=2026-09-01" / "part.parquet").exists()
 
 
+def test_coverage_cache_rechecks_changed_history(tmp_path, monkeypatch) -> None:
+    daily, enriched = tmp_path / "daily", tmp_path / "enriched"
+    cache = tmp_path / "cache.json"
+    day = "2026-09-01"
+    _write_partition(daily, day, ["a"])
+    _write_partition(enriched, day, ["a"])
+    assert _prune_partial_enriched_partitions(daily, enriched, cache_path=cache) == []
+    original = pl.read_parquet
+    calls = []
+
+    def read(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pl, "read_parquet", read)
+    assert _prune_partial_enriched_partitions(daily, enriched, cache_path=cache) == []
+    assert not calls
+    _write_partition(daily, day, ["a", "b"])
+    assert _prune_partial_enriched_partitions(daily, enriched, cache_path=cache) == [day]
+    assert calls
+
+
 def test_enriched_date_without_daily_is_left_alone(tmp_path) -> None:
     # 今日日K尚未同步时, 实时创建的当日分区留给当日正常流程处理
     daily = tmp_path / "kline_daily"

@@ -20,7 +20,7 @@ import logging
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
-from app.services import kline_sync
+from app.services import kline_sync, preferences
 from app.services.pipeline_jobs import job_store
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.repository import KlineRepository
@@ -117,9 +117,12 @@ def run_extend_history(
         return {"error": "本地无日K数据,请先执行一次完整同步"}
 
     new_start = earliest - offset
+    floor = preferences.get_market_data_start_date()
+    if floor is not None:
+        new_start = max(new_start, floor)
     # 不能超过今天
     if new_start >= earliest:
-        return {"error": "扩展范围无效,请增大时间跨度"}
+        return {"error": "已到配置的历史数据保留起点,不能再向前扩展"}
 
     # 2. 解析标的池
     emit("extend_history", 5, "解析标的池…")

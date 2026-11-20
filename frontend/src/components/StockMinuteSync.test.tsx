@@ -95,6 +95,30 @@ it.each([
   expect(api.klineMinuteBatch).toHaveBeenCalledTimes(2)
 })
 
+it('reopening a historical intraday chart reuses its loaded bars', async () => {
+  available = true
+  vi.mocked(api.klineMinute).mockResolvedValue({
+    symbol: SYMBOL, date: DAY, asset_type: 'stock', rows: bars, source: 'live', provider: 'tdxquant',
+  })
+  const chart = <QueryClientProvider client={client}>
+    <StockIntradayChart symbol={SYMBOL} date={DAY} renderer="echarts" />
+  </QueryClientProvider>
+
+  await act(async () => root.render(chart))
+  await tick()
+  expect(host.textContent).toContain('分时图')
+  expect(host.textContent).toContain('通达信分钟数据兜底')
+  expect(api.klineMinute).toHaveBeenCalledOnce()
+
+  await act(async () => root.render(<QueryClientProvider client={client}><div /></QueryClientProvider>))
+  await act(async () => root.render(chart))
+  await tick()
+
+  expect(host.textContent).toContain('分时图')
+  expect(host.textContent).toContain('通达信分钟数据兜底')
+  expect(api.klineMinute).toHaveBeenCalledOnce()
+})
+
 it.each(['echarts', 'lightweight'] as const)('%s: a delayed live response cannot replace newer persisted minute bars', async renderer => {
   available = true
   vi.mocked(api.klineMinute).mockResolvedValue({ symbol: SYMBOL, date: DAY, asset_type: 'etf', rows: bars.slice(0, 1), source: 'live' })

@@ -12,8 +12,10 @@ import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
+import polars as pl
 import pytest
 
 from app.plugins.tdxquant import client as tc
@@ -241,8 +243,6 @@ def test_minute_aware_request_window_matches_beijing_wallclock(zone):
 
 
 def test_tdx_minute_window_flows_through_service_to_parquet(monkeypatch, tmp_path):
-    import polars as pl
-
     from app.services import kline_sync
 
     fake = _FakeClient()
@@ -263,6 +263,63 @@ def test_tdx_minute_window_flows_through_service_to_parquet(monkeypatch, tmp_pat
     assert stored["datetime"][0] == datetime(2026, 10, 9, 9, 31)
     assert stored["volume"][0] == 10.0
     assert stored["amount"][0] == 1000000.0
+
+
+def test_ashare_bj_minute_empty_uses_configured_tdxquant_fallback(monkeypatch):
+    from app.services import kline_sync
+    from app.tickflow.capabilities import CapabilitySet
+
+    symbol = "920202.BJ"
+    trade_day = date(2026, 11, 13)
+    provider = MagicMock()
+    provider.get_minute.return_value = pl.DataFrame({
+        "symbol": [symbol],
+        "datetime": [datetime(2026, 11, 13, 9, 31)],
+        "open": [12.4], "high": [12.5], "low": [12.3], "close": [12.45],
+        "volume": [20.0], "amount": [None],
+    })
+    monkeypatch.setattr(kline_sync, "_selected_minute_provider_name", lambda: "ashare")
+    monkeypatch.setattr(
+        kline_sync, "_try_custom_minute", lambda *args, **kwargs: (pl.DataFrame(), False),
+    )
+    monkeypatch.setattr(
+        "app.data_providers.custom.provider_has_dataset",
+        lambda name, dataset: name == "tdxquant" and dataset == "minute",
+    )
+    monkeypatch.setattr("app.data_providers.custom.get_provider", lambda name: provider)
+
+    frame = kline_sync._fetch_minute_single(
+        symbol, trade_day, "stock", capset=CapabilitySet(), raw_basis=False,
+    )
+
+    assert frame.height == 1
+    assert frame["datetime"][0] == datetime(2026, 11, 13, 9, 31)
+    assert frame["_minute_provider"].to_list() == ["tdxquant"]
+    provider.get_minute.assert_called_once()
+
+
+def test_ashare_non_bj_minute_does_not_use_tdxquant_fallback(monkeypatch):
+    from app.services import kline_sync
+    from app.tickflow.capabilities import CapabilitySet
+
+    symbol = "600519.SH"
+    primary = pl.DataFrame({
+        "symbol": [symbol], "datetime": [datetime(2026, 11, 13, 9, 31)],
+        "open": [10.0], "high": [10.1], "low": [9.9], "close": [10.0],
+        "volume": [10.0], "amount": [None],
+    })
+    monkeypatch.setattr(kline_sync, "_selected_minute_provider_name", lambda: "ashare")
+    monkeypatch.setattr(kline_sync, "_try_custom_minute", lambda *args, **kwargs: (primary, False))
+    monkeypatch.setattr(
+        "app.data_providers.custom.provider_has_dataset",
+        lambda *_: pytest.fail("not a BJ fallback"),
+    )
+
+    frame = kline_sync._fetch_minute_single(
+        symbol, date(2026, 11, 13), "stock", capset=CapabilitySet(), raw_basis=False,
+    )
+
+    assert frame.equals(primary)
 
 
 def test_snapshot_batch_retries_transient_failure(monkeypatch):

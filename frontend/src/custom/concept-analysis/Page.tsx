@@ -25,7 +25,6 @@ import { storage } from '@/lib/storage'
 import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
-import { SectorRotationCard } from '@/components/SectorRotationCard'
 import { useDataStatus } from '@/lib/useSharedQueries'
 
 const KEYWORDS = ['concept', '概念', 'theme', '题材', '板块']
@@ -348,7 +347,6 @@ export function ConceptAnalysis() {
     return set.size
   }, [stats])
   const currentDate = selectedDate ?? marketQuery.data?.as_of ?? rowsQuery.data?.date ?? latestDate ?? ''
-  const isHistoricalDate = !!selectedDate && !!latestDate && selectedDate < latestDate
 
   const handleSaveConfig = (c: AnalysisFieldConfig) => {
     setFieldConfig(c)
@@ -433,11 +431,6 @@ export function ConceptAnalysis() {
             <div role="status" className="text-right text-[11px] text-warning">
               行情接口返回日期与所选日期不一致，已隐藏未对齐的行情统计
             </div>
-          )}
-          {isHistoricalDate ? (
-            <div className="text-right text-[11px] text-muted">概念涨幅轮动仅展示最新交易日</div>
-          ) : (
-            <SectorRotationCard kind="concept" />
           )}
 
           <HeroPanel leading={leading[0]} falling={falling[0]} activeConcept={activeConcept} conceptBreadth={conceptBreadth} />

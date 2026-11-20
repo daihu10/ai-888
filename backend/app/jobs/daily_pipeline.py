@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -22,7 +23,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import settings
 from app.indicators.pipeline import filter_halt_days, run_pipeline
-from app.market_time import cn_today
+from app.market_time import cn_now, cn_today
 from app.services import index_sync, instrument_sync, kline_sync
 from app.services import preferences as _prefs
 from app.tickflow.capabilities import Cap, CapabilitySet
@@ -34,7 +35,46 @@ logger = logging.getLogger(__name__)
 ProgressCb = Callable[..., None]
 
 
-def _prune_partial_enriched_partitions(daily_dir: Path, enriched_dir: Path) -> list[str]:
+def _latest_completed_daily_date(
+    data_dir: Path, today: date, now: datetime | None = None,
+) -> date:
+    """Return today's daily bar only after close; otherwise use the latest closed session."""
+    now = now or cn_now()
+    try:
+        from app.services.data_integrity import _trading_calendar
+
+        calendar = _trading_calendar()
+    except Exception:  # noqa: BLE001
+        calendar = None
+    if calendar is not None:
+        if now.time() >= dt_time(15, 5) and today in calendar:
+            return today
+        previous = [day for day in calendar if day < today]
+        if previous:
+            return max(previous)
+
+    previous = []
+    for table in ("kline_daily", "kline_index_daily", "kline_etf_daily"):
+        for part in (Path(data_dir) / table).glob("date=*"):
+            try:
+                day = date.fromisoformat(part.name.removeprefix("date="))
+            except ValueError:
+                continue
+            if day < today:
+                previous.append(day)
+    if previous:
+        return max(previous)
+    if now.time() >= dt_time(15, 5) and today.weekday() < 5:
+        return today
+    fallback = today - timedelta(days=1)
+    while fallback.weekday() >= 5:
+        fallback -= timedelta(days=1)
+    return fallback
+
+
+def _prune_partial_enriched_partitions(
+    daily_dir: Path, enriched_dir: Path, *, cache_path: Path | None = None,
+) -> list[str]:
     """删除 symbol 覆盖不完整的 enriched 日期分区, 返回被删的日期 (#223)。
 
     自选实时路径会在全市场 enriched 生成前提前创建当日分区 (只有几只自选),
@@ -44,7 +84,27 @@ def _prune_partial_enriched_partitions(daily_dir: Path, enriched_dir: Path) -> l
     删除后 run_pipeline(new_dates_only=True) 会把它们当"新日期"全市场补齐。
     daily 同日分区不存在 (今日日K尚未同步) 时不处理, 留给当日正常流程。
     """
+    import json
     import shutil
+
+    from app.services.fs_utils import atomic_write_text
+
+    cached = {}
+    if cache_path is not None:
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if data.get("version") == 1 and isinstance(data.get("partitions"), dict):
+                cached = data["partitions"]
+        except (OSError, ValueError, AttributeError):
+            pass
+    verified = {}
+
+    def signature(*dirs: Path) -> list:
+        return [
+            [[p.name, p.stat().st_size, p.stat().st_mtime_ns, p.stat().st_ctime_ns]
+             for p in sorted(directory.glob("*.parquet"))]
+            for directory in dirs
+        ]
 
     pruned: list[str] = []
     for part in enriched_dir.glob("date=*"):
@@ -52,6 +112,10 @@ def _prune_partial_enriched_partitions(daily_dir: Path, enriched_dir: Path) -> l
         if not daily_part.exists():
             continue
         try:
+            before = signature(daily_part, part)
+            if cache_path is not None and before == cached.get(part.name):
+                verified[part.name] = before
+                continue
             expected: set[str] = set()
             # 每次只读单文件的停牌判定列, 不加载全历史或指标宽表。
             for path in daily_part.glob("*.parquet"):
@@ -70,6 +134,18 @@ def _prune_partial_enriched_partitions(daily_dir: Path, enriched_dir: Path) -> l
         if expected - actual:
             shutil.rmtree(part, ignore_errors=True)
             pruned.append(part.stem.split("=")[1])
+        elif cache_path is not None:
+            try:
+                if before == signature(daily_part, part):
+                    verified[part.name] = before
+            except OSError:
+                pass
+    if cache_path is not None:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(cache_path, json.dumps({"version": 1, "partitions": verified}))
+        except OSError as e:
+            logger.warning("enriched coverage cache write failed: %s", e)
     return pruned
 
 
@@ -216,8 +292,15 @@ def run_now(
     universe = _resolve_universe(capset, repo)
     emit("resolve_universe", 10, f"标的池规模:{len(universe)} 只")
 
+    history_floor = _prefs.get_market_data_start_date()
+    if history_floor is not None and override_start_date is not None and override_start_date < history_floor:
+        logger.warning("repair start %s is before configured market history floor %s; clamped",
+                       override_start_date, history_floor)
+        override_start_date = history_floor
+
     # 已知异常不能先进入指标计算, 再在末尾才报失败。修补与自检页面共用链路。
     from app.services.integrity_check import repair_known_data
+    emit("resolve_universe", 10, "检查并修复已知数据问题…")
     repair_known_data(repo, capset, on_progress=emit)
 
     # Step 1: 日 K 同步
@@ -244,6 +327,7 @@ def run_now(
     index_stale_day: _date | None = None
     if override_start_date is None:
         try:
+            emit("resolve_universe", 10, "检查最近交易日数据完整性…")
             from app.services import data_integrity
             integrity_issues = data_integrity.scan_recent_integrity(
                 repo.store.data_dir, today=today,
@@ -260,6 +344,10 @@ def run_now(
         except Exception as e:  # noqa: BLE001
             logger.warning("integrity scan failed (soft, 按无坏数据处理): %s", e)
             integrity_issues = []
+    daily_end = _latest_completed_daily_date(repo.store.data_dir, today)
+    if daily_end < today:
+        emit("sync_daily", 12, f"盘中跳过未完成的当日日K，目标日期 {daily_end}")
+        logger.info("daily sync target: %s (today %s is not closed)", daily_end, today)
     # 日K范围拉取的起点(分支3补缺口/分支4首次/数据修正); 实时增量/跳过时为 None。
     # 供 Step 1.5 除权因子回溯范围对齐: 范围拉取→用日K范围, 非范围→最近N天兜底。
     daily_range_start: _date | None = None
@@ -274,8 +362,8 @@ def run_now(
         # 数据修正: 强制用传入日期作起点 batch 拉取, 忽略实时行情覆写分支。
         start_date = override_start_date
         daily_range_start = start_date
-        emit("sync_daily", 12, f"获取日K [{start_date} ~ {today}]…")
-        logger.info("sync_daily: [%s ~ %s] repair/override", start_date, today)
+        emit("sync_daily", 12, f"获取日K [{start_date} ~ {daily_end}]…")
+        logger.info("sync_daily: [%s ~ %s] repair/override", start_date, daily_end)
 
         def _daily_chunk_progress(cur: int, tot: int) -> None:
             emit("sync_daily", 12 + int(33 * cur / tot),
@@ -287,7 +375,7 @@ def run_now(
         written_daily = kline_sync.sync_and_persist_daily_batch(
             symbols_for_repair, repo, capset,
             start_date=_dt.combine(start_date, _dt.min.time()),
-            end_date=_dt.combine(today, _dt.min.time()),
+            end_date=_dt.combine(daily_end, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
             failed_out=repair_failed_symbols,
         )
@@ -295,12 +383,12 @@ def run_now(
             emit("sync_daily", 45,
                  f"日K 完成(定向修复 {len(symbols_for_repair)} 只, 失败 {len(repair_failed_symbols)} 只)")
         else:
-            gap_days = (today - start_date).days
+            gap_days = (daily_end - start_date).days
             new_daily_days = gap_days
             emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
         logger.info(
             "sync_daily: [%s ~ %s] done, symbols=%d(%s) failed=%d",
-            start_date, today, len(symbols_for_repair),
+            start_date, daily_end, len(symbols_for_repair),
             "targeted" if override_symbols else "universe",
             len(repair_failed_symbols),
         )
@@ -330,10 +418,12 @@ def run_now(
         #   此时 start_date = latest_daily = today,batch 刷新当天日K。
         # 完整性修复场景: start_date = min(本地最新日, 最早坏日) —
         #   today_exists 时 latest_daily=今天, 不取 min 会漏掉坏日。
-        start_date = min(d for d in (latest_daily, stale_day) if d is not None)
+        latest_sync_date = min(latest_daily, daily_end) if latest_daily else None
+        stale_sync_day = min(stale_day, daily_end) if stale_day else None
+        start_date = min(d for d in (latest_sync_date, stale_sync_day) if d is not None)
         daily_range_start = start_date
-        emit("sync_daily", 12, f"获取日K [{start_date} ~ {today}]…")
-        logger.info("sync_daily: [%s ~ %s] %s", start_date, today,
+        emit("sync_daily", 12, f"获取日K [{start_date} ~ {daily_end}]…")
+        logger.info("sync_daily: [%s ~ %s] %s", start_date, daily_end,
                     "refresh today" if today_exists else "gap fill")
 
         def _daily_chunk_progress(cur: int, tot: int) -> None:
@@ -342,19 +432,21 @@ def run_now(
         written_daily = kline_sync.sync_and_persist_daily_batch(
             universe, repo, capset,
             start_date=_dt.combine(start_date, _dt.min.time()),
-            end_date=_dt.combine(today, _dt.min.time()),
+            end_date=_dt.combine(daily_end, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
         )
-        gap_days = (today - start_date).days
+        gap_days = (daily_end - start_date).days
         new_daily_days = gap_days
         emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
-        logger.info("sync_daily: [%s ~ %s] done, %d days", start_date, today, gap_days)
+        logger.info("sync_daily: [%s ~ %s] done, %d days", start_date, daily_end, gap_days)
     else:
         # 首次：无任何数据 → batch 拉 1 年
-        start_date = today - _td(days=365)
+        start_date = daily_end - _td(days=365)
+        if history_floor is not None:
+            start_date = max(start_date, history_floor)
         daily_range_start = start_date
-        emit("sync_daily", 12, f"获取日K [{start_date} ~ {today}]…")
-        logger.info("sync_daily: [%s ~ %s] initial fetch", start_date, today)
+        emit("sync_daily", 12, f"获取日K [{start_date} ~ {daily_end}]…")
+        logger.info("sync_daily: [%s ~ %s] initial fetch", start_date, daily_end)
 
         def _daily_chunk_progress(cur: int, tot: int) -> None:
             emit("sync_daily", 12 + int(33 * cur / tot),
@@ -362,10 +454,10 @@ def run_now(
         written_daily = kline_sync.sync_and_persist_daily_batch(
             universe, repo, capset,
             start_date=_dt.combine(start_date, _dt.min.time()),
-            end_date=_dt.combine(today, _dt.min.time()),
+            end_date=_dt.combine(daily_end, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
         )
-        new_daily_days = 365
+        new_daily_days = (daily_end - start_date).days
         emit("sync_daily", 45, "日K 完成")
         logger.info("sync_daily: [%s ~ %s] done", start_date, today)
     _invalidate("daily")
@@ -393,6 +485,7 @@ def run_now(
     lagging_symbols: list[str] = []
     if pull_a_share and latest_daily:
         try:
+            emit("sync_daily", 45, "检查个股日K更新状态…")
             lagging_symbols = repo.symbols_lagging(today, min_gap_days=3)
             if lagging_symbols:
                 logger.warning("日K新鲜度: %d 只标的落后 >3 日 (停牌/退市/拉取失败; 样例: %s)",
@@ -410,7 +503,8 @@ def run_now(
     affected_symbols: list[str] = []
     adj_provider = _prefs.get_adj_factor_provider()
     can_sync_adj = capset.has(Cap.ADJ_FACTOR) or adj_provider != "tickflow"
-    if can_sync_adj:
+    # 普通盘后同步默认不拉因子；明确指定历史修复范围时仍同步对应因子。
+    if can_sync_adj and override_start_date is not None:
         from datetime import datetime, timedelta
         adj_end = datetime.now()
         if daily_range_start is not None:
@@ -442,7 +536,9 @@ def run_now(
         _invalidate("adj_factor")
     else:
         skipped.append("sync_adj")
-        logger.info("sync_adj skipped: no ADJ_FACTOR capability")
+        reason = "普通同步默认关闭，可在数据页手动同步" if can_sync_adj else "无可用数据源"
+        emit("sync_adj", 60, f"除权因子已跳过（{reason}）")
+        logger.info("sync_adj skipped: %s", reason)
 
     # Step 2: 计算 enriched
     #   判断策略:
@@ -463,7 +559,10 @@ def run_now(
     # 或收盘价停留在竞价前快照的 enriched 分区, 让下方计数比较与增量计算把它们
     # 重新当新日期处理 (值级比对以官方日线为准, 实时源不纠错也能自愈)
     if enriched_exists:
-        partial_pruned = _prune_partial_enriched_partitions(daily_dir, enriched_dir)
+        partial_pruned = _prune_partial_enriched_partitions(
+            daily_dir, enriched_dir,
+            cache_path=Path(repo.store.data_dir) / "user_data" / "enriched_coverage_cache.json",
+        )
         stale_pruned = _prune_stale_price_partitions(daily_dir, enriched_dir)
         pruned_dates = sorted(set(partial_pruned) | set(stale_pruned))
         if pruned_dates:
@@ -568,7 +667,7 @@ def run_now(
                 index_dir = repo.store.data_dir / "kline_index_enriched"
                 index_dates = sorted(
                     d.name[5:] for d in index_dir.glob("date=*")
-                    if d.is_dir() and d.name.startswith("date=")
+                    if d.is_dir() and d.name.startswith("date=") and d.name[5:] <= daily_end.isoformat()
                 ) if index_dir.exists() else []
                 # 数据修正模式下用传入起点; 否则用本地指数最新日期补到今天;
                 # 完整性修复时起点再提前到最早坏日 (实时写过今天的指数分区时,
@@ -576,7 +675,9 @@ def run_now(
                 if override_start_date:
                     index_start = override_start_date
                 else:
-                    index_start = _date.fromisoformat(index_dates[-1]) if index_dates else today - _td(days=365)
+                    index_start = _date.fromisoformat(index_dates[-1]) if index_dates else daily_end - _td(days=365)
+                    if history_floor is not None:
+                        index_start = max(index_start, history_floor)
                 if index_stale_day is not None and index_start > index_stale_day:
                     index_start = index_stale_day
 
@@ -588,7 +689,7 @@ def run_now(
                     repo,
                     capset,
                     start_date=_dt.combine(index_start, _dt.min.time()),
-                    end_date=_dt.combine(today, _dt.min.time()),
+                    end_date=_dt.combine(daily_end, _dt.min.time()),
                     on_chunk_done=_index_chunk,
                 )
                 emit("sync_index", 88, f"指数日K完成,{written_index_daily} 行")
@@ -628,12 +729,14 @@ def run_now(
                 etf_dir = repo.store.data_dir / "kline_etf_enriched"
                 etf_dates = sorted(
                     d.name[5:] for d in etf_dir.glob("date=*")
-                    if d.is_dir() and d.name.startswith("date=")
+                    if d.is_dir() and d.name.startswith("date=") and d.name[5:] <= daily_end.isoformat()
                 ) if etf_dir.exists() else []
                 if override_start_date is not None:
                     etf_start = override_start_date
                 else:
-                    etf_start = _date.fromisoformat(etf_dates[-1]) if etf_dates else today - _td(days=365)
+                    etf_start = _date.fromisoformat(etf_dates[-1]) if etf_dates else daily_end - _td(days=365)
+                    if history_floor is not None:
+                        etf_start = max(etf_start, history_floor)
                 # 同指数: 完整性修复时把 ETF 起点提前到最早坏日
                 if etf_stale_day is not None and etf_start > etf_stale_day:
                     etf_start = etf_stale_day
@@ -646,7 +749,7 @@ def run_now(
                     repo,
                     capset,
                     start_date=_dt.combine(etf_start, _dt.min.time()),
-                    end_date=_dt.combine(today, _dt.min.time()),
+                    end_date=_dt.combine(daily_end, _dt.min.time()),
                     on_chunk_done=_etf_chunk,
                 )
                 emit("sync_index", 88, f"ETF 日K完成,{written_etf_daily} 行")

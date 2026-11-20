@@ -109,6 +109,21 @@ def repo(tmp_path: Path):
     _reset_caches()
 
 
+@pytest.mark.parametrize("kind", ["concept", "industry"])
+def test_selected_date_missing_never_returns_latest_partition(repo, kind):
+    latest = sector_rotation.build_sector_rotation(repo, kind=kind)
+    selected = sector_rotation.build_sector_rotation(repo, kind=kind, target_date="2026-09-09")
+    assert latest.get("date") == DAY
+    assert selected == {"status": "no_data", "reason": "minute_date_missing", "date": "2026-09-09", "kind": kind}
+
+
+def test_selected_existing_partition_and_historical_flow(repo):
+    result = sector_rotation.build_sector_rotation(repo, kind="concept", target_date=DAY, flow_field="ext_flow.净流入")
+    assert result["status"] == "ok"
+    assert result["date"] == DAY
+    assert result["flow_available"] is False
+
+
 def test_rotation_switch_direction_and_timeline(repo):
     """核心口径: 领涨从 A 切到 B → B rank_change>0 (切入), A <0 (退潮);
     末桶相对 1 小时前 top 换血 → rotation 高; 早期桶 rotation 低。"""

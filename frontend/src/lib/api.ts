@@ -2807,9 +2807,94 @@ export interface LabReport {
   }
 }
 
+export interface TradingPlanReview {
+  answer: boolean | null
+  reason: string
+  stop_loss: string
+  score: number | null
+}
+
+export interface TradingPlanHolding {
+  symbol: string
+  name: string
+  above_ma5: boolean | null
+  above_ma10: boolean | null
+  above_ma20: boolean | null
+  reason: string
+  stop_loss: string
+}
+
+export interface TradingPlanDraft {
+  revision: string | null
+  market_above_ma5: boolean | null
+  matches_mode: boolean | null
+  holdings: TradingPlanHolding[]
+  highest_board_count: number | null
+  limit_up_count: number | null
+  limit_down_count: number | null
+  market_sentiment: '强势' | '震荡' | '弱势' | null
+  core_theme: string
+  secondary_theme: string
+  holding_execution: string
+  target_stocks: string
+  holding_execution_followed: boolean | null
+  target_stocks_followed: boolean | null
+  execution_review: TradingPlanReview
+  ma5_review: TradingPlanReview
+  ma20_review: TradingPlanReview
+}
+
+export interface TradingPlan extends TradingPlanDraft {
+  schema_version: 1
+  date: string
+  updated_at: string | null
+  overall_score: number | null
+}
+
+export interface TradingPlanScore {
+  date: string
+  overall_score: number | null
+}
+
+export interface TradingPlanQuote {
+  symbol: string
+  price: number | null
+  quote_freshness: QuoteFreshness
+}
+
+export interface TradingPlanDayPrice {
+  symbol: string
+  price: number | null
+  data_date: string | null
+}
+
+export interface TradingPlanSyncRow extends TradingPlanQuote {
+  above_ma5: boolean | null
+  above_ma10: boolean | null
+  above_ma20: boolean | null
+  issues: string[]
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
+
+  tradingPlanDates: () => request<{ dates: string[] }>('/api/custom/trading-plan'),
+  tradingPlanScores: (year: number) => request<{ year: number; rows: TradingPlanScore[] }>(`/api/custom/trading-plan/scores?year=${year}`),
+  tradingPlanQuotes: (symbols: readonly string[]) =>
+    request<{ rows: TradingPlanQuote[] }>(`/api/custom/trading-plan/quotes?symbols=${encodeURIComponent(symbols.join(','))}`),
+  tradingPlanPrices: (date: string, symbols: readonly string[]) =>
+    request<{ date: string; rows: TradingPlanDayPrice[] }>(`/api/custom/trading-plan/prices?date=${encodeURIComponent(date)}&symbols=${encodeURIComponent(symbols.join(','))}`),
+  syncTradingPlan: (date: string, symbols: readonly string[]) =>
+    request<{ date: string; rows: TradingPlanSyncRow[] }>('/api/custom/trading-plan/sync', {
+      method: 'POST', body: JSON.stringify({ date, symbols }), timeoutMs: 180_000,
+    }),
+  tradingPlan: (date: string) =>
+    request<TradingPlan>(`/api/custom/trading-plan/${encodeURIComponent(date)}`),
+  saveTradingPlan: (date: string, draft: TradingPlanDraft) =>
+    request<TradingPlan>(`/api/custom/trading-plan/${encodeURIComponent(date)}`, {
+      method: 'PUT', body: JSON.stringify(draft),
+    }),
 
   // ===== Auth (访问认证) =====
   authStatus: () =>
@@ -3435,6 +3520,7 @@ export const api = {
       rows: MinuteKlineRow[]
       /** local=完整; local_partial=本地有但不完整(见 expected/actual); live=源实时; none=无数据 */
       source?: 'local' | 'local_partial' | 'live' | 'none'
+      provider?: string
       /** local_partial 时: 该交易日应有根数 / 实有根数 */
       expected?: number
       actual?: number
@@ -3443,6 +3529,7 @@ export const api = {
       prev_close?: number | null
     }>(
       `/api/kline/minute?symbol=${encodeURIComponent(symbol)}${date ? `&date=${date}` : ''}${live ? '&live=1' : ''}`,
+      { timeoutMs: 60_000 },
     ),
   klineMinuteRange: (symbol: string, days = 10) =>
     request<{
@@ -3466,6 +3553,10 @@ export const api = {
       dateRange
         ? `/api/index/daily?symbol=${encodeURIComponent(symbol)}&start_date=${dateRange.start}&end_date=${dateRange.end}`
         : `/api/index/daily?symbol=${encodeURIComponent(symbol)}&days=${days}`,
+    ),
+  marketIntraday: (date: string) =>
+    request<{ date: string; source: string; status: 'ok' | 'no_data' | 'unavailable'; rows: { time: string; price: number }[] }>(
+      `/api/sector-rotation/market-intraday?date=${encodeURIComponent(date)}`, { quiet: true },
     ),
   indexMinute: (symbol: string, date?: string) =>
     request<{
@@ -4149,8 +4240,9 @@ export const api = {
   },
 
   // ===== 板块切换 (盘中轮动) =====
-  sectorRotation: (params: { kind: 'concept' | 'industry'; flow?: string; top?: number; bucket?: number; seriesNames?: string[]; autoRows?: number; excludeSectors?: string[]; sortBy?: 'activity' | 'score' | 'pct' | 'rank_change' | 'momentum' | 'flow' }) => {
+  sectorRotation: (params: { kind: 'concept' | 'industry'; date?: string; flow?: string; top?: number; bucket?: number; seriesNames?: string[]; autoRows?: number; excludeSectors?: string[]; sortBy?: 'activity' | 'score' | 'pct' | 'rank_change' | 'momentum' | 'flow' }) => {
     const query = new URLSearchParams({ kind: params.kind })
+    if (params.date) query.set('date', params.date)
     if (params.flow) query.set('flow', params.flow)
     if (params.top != null) query.set('top', String(params.top))
     if (params.bucket != null) query.set('bucket', String(params.bucket))

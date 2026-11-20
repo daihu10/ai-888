@@ -1403,6 +1403,35 @@ def _fetch_minute_single(
         asset_type=asset_type, freq="1m",
     )
     if not fallback:
+        # Tencent/Sina do not cover Beijing Exchange symbols. Use the configured
+        # TdxQuant minute capability only for BJ stocks when the selected source is empty.
+        if (
+            (df is None or df.is_empty())
+            and asset_type == "stock"
+            and symbol.upper().endswith(".BJ")
+            and _selected_minute_provider_name() == "ashare"
+        ):
+            try:
+                from app.data_providers import custom
+
+                if custom.provider_has_dataset("tdxquant", "minute"):
+                    tdx = custom.get_provider("tdxquant")
+                    tdx_df = tdx.get_minute(
+                        [symbol], start_time=start_time, end_time=end_time,
+                        asset_type=asset_type, freq="1m",
+                    )
+                    tdx_df = _normalize_minute(tdx_df, source="tdxquant")
+                    start_naive = start_time.astimezone(CN_TZ).replace(tzinfo=None)
+                    end_naive = end_time.astimezone(CN_TZ).replace(tzinfo=None)
+                    tdx_df = tdx_df.filter(
+                        (pl.col("symbol") == symbol)
+                        & pl.col("datetime").is_between(start_naive, end_naive, closed="both")
+                    )
+                    if not tdx_df.is_empty():
+                        logger.info("Ashare minute fallback: TdxQuant supplied %s %s", symbol, trade_date)
+                        return tdx_df.with_columns(pl.lit("tdxquant").alias("_minute_provider"))
+            except Exception as exc:  # noqa: BLE001 — the primary minute source remains usable
+                logger.warning("TdxQuant BJ minute fallback failed for %s: %s", symbol, exc)
         # 见 sync_minute_batch 同分支注释: df 在此必非 None。
         return df if df is not None else pl.DataFrame()
 

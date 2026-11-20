@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/api/sector-rotation", tags=["sector-rotation"])
 @router.get("")
 def get_sector_rotation(
     request: Request,
+    date: date | None = Query(None),
     kind: Literal["concept", "industry"] = Query("concept", description="板块维度: 概念/行业 二选一"),
     flow: str | None = Query(None, max_length=200, description="资金流扩展列 (表id.列名), 缺省纯涨幅"),
     top: int = Query(30, ge=5, le=100, description="返回板块数上限"),
@@ -42,6 +44,7 @@ def get_sector_rotation(
 
     return sector_rotation.build_sector_rotation(
         request.app.state.repo,
+        target_date=date.isoformat() if date else None,
         kind=kind,
         flow_field=flow,
         top=top,
@@ -62,3 +65,13 @@ def _parse_str_array(raw: str, param_name: str) -> list[str]:
     if not isinstance(parsed, list) or any(not isinstance(x, str) for x in parsed):
         raise HTTPException(status_code=400, detail=f"{param_name} 需为字符串数组")
     return [x for x in parsed if x.strip()]
+
+@router.get("/market-intraday")
+def get_market_intraday(date: date = Query(...)):
+    """上证指数分时；上游不可用与日期无数据分开返回。"""
+    from app.services.market_intraday import index_trends
+    try:
+        rows = index_trends(date)
+    except Exception:  # 上游公开接口可能限流或网络中断
+        return {"date": date.isoformat(), "source": "eastmoney", "status": "unavailable", "rows": []}
+    return {"date": date.isoformat(), "source": "eastmoney", "status": "ok" if rows else "no_data", "rows": rows}

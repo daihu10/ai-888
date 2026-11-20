@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 from app.services.fs_utils import atomic_write_text
@@ -210,6 +211,18 @@ def get_monitor_ext_fields() -> dict:
 
 def get_minute_sync_days() -> int:
     return max(1, min(30, load().get("minute_sync_days", 5)))
+
+
+def get_market_data_start_date() -> date | None:
+    """Configured lower bound for retained and synchronized market history."""
+    value = load().get("market_data_start_date")
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        logger.warning("invalid market_data_start_date preference: %r", value)
+        return None
 
 
 def get_minute_sync_segment_days() -> int:

@@ -16,7 +16,7 @@ from app.services import data_integrity, preferences
 from app.tickflow.capabilities import CapabilitySet
 
 
-def _run_pipeline(tmp_path: Path, monkeypatch, minute_provider: str) -> tuple[dict, list[dict]]:
+def _run_pipeline(tmp_path: Path, monkeypatch, minute_provider: str, capset=None) -> tuple[dict, list[dict]]:
     """跑 run_now 到分钟阶段, 返回 (result, sync_and_persist_minute 调用记录)。"""
     monkeypatch.setattr(daily_pipeline.settings, "data_dir", tmp_path)
     monkeypatch.setattr(preferences, "load", lambda: {
@@ -64,7 +64,18 @@ def _run_pipeline(tmp_path: Path, monkeypatch, minute_provider: str) -> tuple[di
         store=SimpleNamespace(data_dir=tmp_path),
         latest_daily_date=lambda: date(2026, 9, 28),
     )
-    return daily_pipeline.run_now(repo, CapabilitySet(set())), calls
+    return daily_pipeline.run_now(repo, capset or CapabilitySet(set())), calls
+
+
+def test_normal_pipeline_skips_adjustment_factor_even_when_available(tmp_path, monkeypatch):
+    from app.tickflow.capabilities import Cap
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("ordinary synchronization must not fetch adjustment factors")
+
+    monkeypatch.setattr(daily_pipeline.kline_sync, "sync_adj_factor", unexpected)
+    result, _ = _run_pipeline(tmp_path, monkeypatch, "tickflow", CapabilitySet({Cap.ADJ_FACTOR: None}))
+    assert "sync_adj" in result["skipped_stages"]
 
 
 @pytest.mark.parametrize("provider,expect_called", [

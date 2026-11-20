@@ -308,13 +308,14 @@ function swatchDash(borderColor: string) {
 
 const NO_DATA_HINTS: Record<string, string> = {
   minute_missing: '尚无全市场分钟数据 — 需开启全量分钟落盘 (数据源设置 → 全量分钟路由)',
+  minute_date_missing: '所选日期暂无全市场分钟数据，无法展示当日板块轮动',
   minute_schema: '分钟数据分区读取失败, 请检查数据目录',
   minute_empty: '当日分钟数据为空',
   members_missing: '板块成分数据缺失 — 请先在数据页获取概念/行业分类扩展数据',
   no_member_bars: '当日分钟数据中没有板块成分股的行情',
 }
 
-export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
+export function SectorRotationCard({ kind, date }: { kind: 'concept' | 'industry'; date?: string }) {
   const dimLabel = kind === 'industry' ? '行业' : '概念'
   const [flow, setFlow] = useState<string>(() => localStorage.getItem(`${FLOW_LS_PREFIX}${kind}`) ?? '')
   const [bucket, setBucket] = useState(5)
@@ -383,9 +384,9 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
     ? ''
     : `${rowsMode}|${autoRows}|${excludeNames === null ? 'default' : JSON.stringify(excludeNames)}`
   const rotationQuery = useQuery({
-    queryKey: QK.sectorRotation(kind, flow, bucket, seriesKey, filterKey),
+    queryKey: QK.sectorRotation(kind, flow, bucket, seriesKey, filterKey, date),
     queryFn: () => api.sectorRotation({
-      kind, flow: flow || undefined, bucket,
+      kind, date, flow: flow || undefined, bucket,
       seriesNames: seriesNames.length ? seriesNames : undefined,
       autoRows: rowsMode === 'custom' ? undefined : autoRows,
       excludeSectors: rowsMode === 'custom' || excludeNames === null ? undefined : excludeNames,

@@ -85,14 +85,39 @@ def sync_instruments(data_dir: Path) -> int:
         # 免费接口的限价来自历史行情，不能盖上同步日期当作当日权威价。
         current_limits = tf_client.current_mode() == "api_key"
         all_rows = []
+        failed_exchanges = []
         for ex in _EXCHANGES:
             try:
                 items = tf.exchanges.get_instruments(ex, instrument_type="stock")
                 if items:
                     all_rows.extend(_flatten_instruments(items, current_limits=current_limits))
                     logger.info("instruments %s: %d stocks", ex, len(items))
+                else:
+                    failed_exchanges.append(ex)
+                    logger.warning("get_instruments(%s) returned no stocks", ex)
             except Exception as e:
+                failed_exchanges.append(ex)
                 logger.warning("get_instruments(%s) failed: %s", ex, e)
+
+        if failed_exchanges:
+            path = data_dir / "instruments" / "instruments.parquet"
+            try:
+                existing = pl.read_parquet(path)
+                symbols = existing["symbol"].cast(pl.Utf8)
+                for ex in failed_exchanges:
+                    old = existing.filter(symbols.str.ends_with(f".{ex}"))
+                    if old.is_empty():
+                        raise ValueError(f"旧维表缺少 {ex} 标的")
+                    keys = ("symbol", "name", "code", "exchange", "region", "type",
+                            "listing_date", "total_shares", "float_shares", "tick_size",
+                            "limit_up", "limit_down")
+                    all_rows.extend({key: row.get(key) if key not in ("limit_up", "limit_down")
+                                     else None for key in keys} for row in old.to_dicts())
+                    logger.warning("instruments %s: 保留旧维表的 %d 只股票", ex, old.height)
+            except Exception as e:
+                raise RuntimeError(
+                    f"标的维表同步失败: {','.join(failed_exchanges)} 无法获取且旧数据不可用，未覆盖旧维表"
+                ) from e
 
     if not all_rows:
         return 0

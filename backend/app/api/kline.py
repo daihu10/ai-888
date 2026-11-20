@@ -1240,12 +1240,17 @@ def get_minute(
                 live_df = minute_adjust.apply_minute_adjustment(
                     live_df, repo.store.data_dir, asset_type,
                 )
+            minute_provider = None
+            if "_minute_provider" in live_df.columns:
+                minute_provider = live_df["_minute_provider"][0]
+                live_df = live_df.drop("_minute_provider")
             return _gzip_payload(
                 request,
                 {
                     "symbol": symbol, "name": stock_name, "stock_info": stock_info,
                     "date": str(trade_date), "rows": live_df.to_dicts(),
                     "source": "live", "asset_type": asset_type,
+                    **({"provider": minute_provider} if minute_provider else {}),
                     "price_limit": price_limit, "prev_close": prev_close,
                 },
                 pref_key="minute_batch_compress",
@@ -1314,12 +1319,17 @@ def get_minute(
         live_df = minute_adjust.apply_minute_adjustment(
             live_df, repo.store.data_dir, asset_type,
         )
+    minute_provider = None
+    if "_minute_provider" in live_df.columns:
+        minute_provider = live_df["_minute_provider"][0]
+        live_df = live_df.drop("_minute_provider")
     return _gzip_payload(
         request,
         {
             "symbol": symbol, "name": stock_name, "stock_info": stock_info,
             "date": str(trade_date), "rows": live_df.to_dicts(),
             "source": "live" if not live_df.is_empty() else "none",
+            **({"provider": minute_provider} if minute_provider else {}),
             "asset_type": asset_type,
             "price_limit": price_limit,
             "prev_close": prev_close,

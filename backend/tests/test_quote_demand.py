@@ -10,6 +10,8 @@ from app.services.index_const import CORE_INDEX_SYMBOLS
 
 @pytest.fixture
 def market(monkeypatch, tmp_path):
+    # Isolate the configured source too: a local plugin preference must not bypass mocks.
+    monkeypatch.setattr(preferences, "load", lambda: {"realtime_data_provider": "tickflow"})
     monkeypatch.setattr(watchlist, "list_symbols", lambda: [
         {"symbol": "000985.SH"}, {"symbol": "159558.SZ"}, {"symbol": "600519.SH"},
     ])
@@ -218,7 +220,9 @@ def test_paused_worker_cannot_be_forced_to_write_by_refresh(market, monkeypatch)
     fetch = Mock()
     monkeypatch.setattr(service, "_fetch_full_market_quotes", fetch)
     service.pause()
-    assert service._fetch_quotes() is False
+    monkeypatch.setattr(service, "status", lambda: {"paused": True})
+    monkeypatch.setattr(service, "_market_phase", lambda: "continuous")
+    assert service.refresh()["updated"] is False
     fetch.assert_not_called()
 
 

@@ -190,6 +190,22 @@ def test_custom_minute_source_remains_available_without_tickflow_capability(monk
     get_client.assert_not_called()
 
 
+def test_minute_api_marks_tdxquant_bj_fallback_without_leaking_marker_column(monkeypatch):
+    rows = _minute_rows(1).with_columns(pl.lit("tdxquant").alias("_minute_provider"))
+    monkeypatch.setattr("app.services.kline_sync.fetch_minute_single", lambda *args, **kwargs: rows)
+
+    response = _client(_DetailRepo(pl.DataFrame())).get(
+        "/api/kline/minute",
+        params={"symbol": _SYMBOL, "date": str(_TRADE_DATE)},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "tdxquant"
+    assert body["source"] == "live"
+    assert "_minute_provider" not in body["rows"][0]
+
+
 def test_failed_custom_source_does_not_fall_back_to_unsupported_tickflow(monkeypatch):
     provider = MagicMock()
     provider.config.datasets = {"minute": object()}

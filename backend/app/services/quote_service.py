@@ -744,11 +744,11 @@ class QuoteService:
         """
         phase = self._market_phase()
         is_final = phase in {"morning_final", "close_final"}
-        self._fetch_quotes(
+        updated = self._fetch_quotes(
             final=is_final,
             final_boundary_ms=self._final_boundary_ms(phase) if is_final else None,
         )
-        return self.status()
+        return {**self.status(), "updated": updated}
 
     # ================================================================
     # 后台轮询

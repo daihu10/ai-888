@@ -35,7 +35,7 @@ from typing import Any
 
 import polars as pl
 
-from app.market_time import trading_minutes_elapsed_from_dt
+from app.market_time import cn_today, trading_minutes_elapsed_from_dt
 from app.services.ext_data import ExtConfigStore
 from app.services.rps_rotation import _load_concept_map_df
 
@@ -348,6 +348,7 @@ def build_sector_rotation(
     exclude_sectors: list[str] | None = None,
     auto_rows: int | None = None,
     sort_by: str = "activity",
+    target_date: str | None = None,
 ) -> dict:
     """计算盘中板块切换走势 (概念/行业二选一)。
 
@@ -400,14 +401,14 @@ def build_sector_rotation(
     data_dir: Path = repo.store.data_dir
     cache_key = (
         kind, flow_field or "", top, bucket_minutes, tuple(series_names or ()),
-        exclude_effective, rows_limit, sort_by,
+        exclude_effective, rows_limit, sort_by, target_date,
     )
     now = time.monotonic()
     hit = _cache.get(cache_key)
     if hit is not None and (now - _cache_ts.get(cache_key, 0.0)) < _CACHE_TTL:
         return hit
 
-    result = _compute(repo, data_dir, kind, flow_field, top, bucket_minutes, series_names, exclude_effective, rows_limit, sort_by)
+    result = _compute(repo, data_dir, kind, flow_field, top, bucket_minutes, series_names, exclude_effective, rows_limit, sort_by, target_date)
     _cache[cache_key] = result
     _cache_ts[cache_key] = time.monotonic()
     while len(_cache) > _CACHE_MAX_ENTRIES:
@@ -419,11 +420,13 @@ def build_sector_rotation(
     return result
 
 
-def _compute(repo, data_dir: Path, kind: str, flow_field: str | None, top: int, bucket_minutes: int, series_names: list[str] | None, exclude_sectors: tuple[str, ...], auto_rows: int, sort_by: str) -> dict:
+def _compute(repo, data_dir: Path, kind: str, flow_field: str | None, top: int, bucket_minutes: int, series_names: list[str] | None, exclude_sectors: tuple[str, ...], auto_rows: int, sort_by: str, target_date: str | None) -> dict:
     minute_dir = data_dir / "kline_minute"
-    target = _latest_minute_partition(minute_dir)
+    target = target_date or _latest_minute_partition(minute_dir)
     if not target:
         return {"status": "no_data", "reason": "minute_missing", "kind": kind}
+    if not (minute_dir / f"date={target}" / "part.parquet").is_file():
+        return {"status": "no_data", "reason": "minute_date_missing", "date": target, "kind": kind}
 
     map_df, member_count = _load_concept_map_df(repo, kind)
     if map_df.is_empty() or member_count == 0:
@@ -532,7 +535,7 @@ def _compute(repo, data_dir: Path, kind: str, flow_field: str | None, top: int, 
     # 资金流 (扩展数据, 用户选择): 板块 = 成分股数值合计
     flow_by_member: dict[str, float] = {}
     flow_available = False
-    if flow_field:
+    if flow_field and (target_date is None or target == cn_today().isoformat()):
         flow_df = _load_sector_flow(data_dir, flow_field)
         if flow_df is not None and not flow_df.is_empty():
             flow_available = True
