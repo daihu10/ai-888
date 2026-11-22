@@ -37,7 +37,8 @@ def test_daily_roundtrip_and_average(client):
         "holdings": [
             {"symbol": "600000.SH", "name": "浦发银行", "above_ma5": False,
              "above_ma10": True, "above_ma20": False,
-             "reason": "等待突破", "stop_loss": "跌破10元"},
+             "reason": "等待突破", "tomorrow_plan": "回踩5日线加仓", "plan_followed": False,
+             "stop_loss": "跌破10元"},
             {"symbol": "000001.SZ", "name": "平安银行", "above_ma5": True},
         ],
         "highest_board_count": 5, "limit_up_count": 60, "limit_down_count": 12,
@@ -55,6 +56,10 @@ def test_daily_roundtrip_and_average(client):
     assert saved["limit_down_count"] == 12
     assert saved["updated_at"].endswith("+08:00")
     assert saved["holdings"][0]["stop_loss"] == "跌破10元"
+    assert saved["holdings"][0]["tomorrow_plan"] == "回踩5日线加仓"
+    assert saved["holdings"][0]["plan_followed"] is False
+    assert saved["holdings"][1]["tomorrow_plan"] == ""
+    assert saved["holdings"][1]["plan_followed"] is None
     assert saved["holdings"][0]["above_ma10"] is True
     assert saved["holdings"][0]["above_ma20"] is False
     assert saved["holdings"][1]["above_ma10"] is None
@@ -85,6 +90,8 @@ def test_daily_roundtrip_and_average(client):
     ("holdings", [{"symbol": "600000.SH", "name": "浦发"}] * 2),
     ("holdings", [{"symbol": "600000.SH", "name": "浦发", "above_ma10": "yes"}]),
     ("holdings", [{"symbol": "600000.SH", "name": "浦发", "above_ma20": 1}]),
+    ("holdings", [{"symbol": "600000.SH", "name": "浦发", "plan_followed": "yes"}]),
+    ("holdings", [{"symbol": "600000.SH", "name": "浦发", "tomorrow_plan": "x" * 5001}]),
     ("core_theme", "x" * 501), ("overall_score", 10),
 ])
 def test_invalid_input_is_not_saved(client, field, value):
@@ -201,7 +208,7 @@ def test_old_plan_without_new_ma_fields_remains_editable(client):
     stored.pop("target_stocks_followed")
     stored.pop("market_sentiment")
     stored.pop("self_assessment")
-    for key in ("above_ma10", "above_ma20"):
+    for key in ("above_ma10", "above_ma20", "tomorrow_plan", "plan_followed"):
         stored["holdings"][0].pop(key)
     path.write_text(json.dumps(stored), encoding="utf-8")
     loaded = client.get(url).json()
@@ -353,6 +360,9 @@ def test_sync_refreshes_once_and_compares_adjusted_prices_without_saving_plan(cl
     assert response.status_code == 200
     first, second = response.json()["rows"]
     assert first["price"] == 10.
+    # 均线6为复权价，止损线必须换算回实际股价：6 * 10 / 5 = 12。
+    assert first["ma5_price"] == 12.
+    assert second["ma5_price"] == 11.
     # 原价10高于均线6，但前复权价格5低于均线6，必须判否；相等判是。
     assert [first[f"above_ma{n}"] for n in (5, 10, 20)] == [False, True, True]
     assert [second[f"above_ma{n}"] for n in (5, 10, 20)] == [True, False, None]
@@ -380,8 +390,32 @@ def test_sync_skips_old_misattributed_missing_and_future_quotes(client, sync_mar
     assert response.status_code == 200
     for row in response.json()["rows"]:
         assert row["price"] is None
+        assert row["ma5_price"] is None
         assert all(row[f"above_ma{n}"] is None for n in (5, 10, 20))
         assert row["issues"]
+
+
+@pytest.mark.parametrize("close,ma5,raw,expected", [
+    (10., 9.125, 10., 9.13),
+    (5., 4.125, 10., 8.25),
+    (None, 9., 10., None), (0., 9., 10., None),
+    (10., None, 10., None), (10., float("inf"), 10., None),
+    (10., float("nan"), 10., None), (10., -1., 10., None),
+    (1e-300, 1e300, 10., None), (1e300, 1e-300, 10., None),
+])
+def test_sync_stop_price_rounding_and_invalid_ma_preserves_stop(client, sync_market, close, ma5, raw, expected):
+    day, repo, _ = sync_market
+    frame, _ = repo.get_enriched_latest.return_value
+    repo.get_enriched_latest.return_value = (frame.filter(pl.col("symbol") == "600000.SH").with_columns(
+        pl.lit(close).alias("close"), pl.lit(ma5).alias("ma5"), pl.lit(raw).alias("raw_close"),
+    ), day)
+    response = client.post("/api/custom/trading-plan/sync", json={"date": str(day), "symbols": ["600000.SH"]})
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["price"] == raw
+    assert row["ma5_price"] == expected
+    if expected is None:
+        assert any("止损线" in issue for issue in row["issues"])
 
 
 @pytest.mark.parametrize("failure", [False, RuntimeError("private provider details")])

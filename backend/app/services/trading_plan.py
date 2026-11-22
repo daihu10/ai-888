@@ -6,6 +6,7 @@ import logging
 import math
 import threading
 from datetime import date, datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -45,6 +46,8 @@ class Holding(PlanModel):
     above_ma10: Answer | None = None
     above_ma20: Answer | None = None
     reason: Note = ""
+    tomorrow_plan: Note = ""
+    plan_followed: Answer | None = None
     stop_loss: Note = ""
 
 
@@ -144,13 +147,13 @@ def synced_holdings(repo, day: date, symbols: list[str], freshness) -> list[dict
         raw_price = source.get("raw_close")
         provenance = freshness.describe({**source, "close": raw_price})
         row = {"symbol": symbol, "price": None, "quote_freshness": provenance,
-               "above_ma5": None, "above_ma10": None, "above_ma20": None, "issues": []}
+               "above_ma5": None, "above_ma10": None, "above_ma20": None, "ma5_price": None, "issues": []}
         # 同时检查行日期与行情时间归属；旧日快照不能冒充今天的价格或均线。
         if (str(source.get("date", ""))[:10] != day.isoformat()
                 or provenance["data_date"] != day.isoformat()
                 or provenance["state"] in {"missing", "stale", "unknown"}
                 or not _valid_price(raw_price)):
-            row["issues"].append("暂无有效的当天行情，保留原有勾选")
+            row["issues"].append("暂无有效的当天行情，保留原有勾选和止损线")
         else:
             row["price"] = raw_price
             # maN 与 enriched.close 都为前复权口径；不得使用 raw_close 比较。
@@ -161,6 +164,16 @@ def synced_holdings(repo, day: date, symbols: list[str], freshness) -> list[dict
                     row[f"above_ma{days}"] = close >= ma
                 else:
                     row["issues"].append(f"缺少{days}日均线数据，保留原有勾选")
+            ma5 = source.get("ma5")
+            if _valid_price(close) and _valid_price(ma5):
+                # 同一快照的复权比例换回原价，才能作为实际止损价格。
+                price = ma5 * (raw_price / close)
+                if _valid_price(price) and price >= 0.005:
+                    with localcontext() as context:
+                        context.prec = max(28, Decimal(str(price)).adjusted() + 3)
+                        row["ma5_price"] = float(Decimal(str(price)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if row["ma5_price"] is None:
+                row["issues"].append("无法计算5日均线价格，保留原有止损线")
         rows.append(row)
     return rows
 

@@ -167,7 +167,23 @@ body {
   animation: trading-plan-danger-frame 2.8s ease-in-out infinite;
 }
 
+@keyframes trading-plan-profit-blink {
+  0%, 24%, 100% { opacity: 1; }
+  12% { opacity: 0.2; }
+}
+
+.trading-plan-profit-emphasis {
+  display: inline-block;
+  font-size: 1.5em;
+  font-weight: 800;
+  animation: trading-plan-profit-blink 2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .trading-plan-profit-emphasis {
+    animation: none;
+  }
+
   .trading-plan-danger-frame {
     animation: none;
     border-color: hsl(var(--danger) / 0.9);

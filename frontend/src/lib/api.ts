@@ -2821,6 +2821,8 @@ export interface TradingPlanHolding {
   above_ma10: boolean | null
   above_ma20: boolean | null
   reason: string
+  tomorrow_plan: string
+  plan_followed: boolean | null
   stop_loss: string
 }
 
@@ -2873,6 +2875,7 @@ export interface TradingPlanSyncRow extends TradingPlanQuote {
   above_ma5: boolean | null
   above_ma10: boolean | null
   above_ma20: boolean | null
+  ma5_price: number | null
   issues: string[]
 }
 

@@ -14,7 +14,7 @@ import { ScoreCalendar } from './ScoreCalendar'
 
 const inputClass = 'w-full min-w-0 rounded-btn border border-border/70 bg-base px-2 py-1.5 text-xs leading-4 text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40'
 const buttonClass = 'inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-btn border border-border px-2.5 text-xs transition-colors hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50'
-const holdingColumns = 'xl:grid-cols-[110px_repeat(2,108px)_repeat(3,112px)_minmax(0,1fr)_minmax(0,1fr)_28px]'
+const holdingColumns = 'sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[100px_repeat(2,104px)_repeat(3,108px)_minmax(120px,1fr)_minmax(120px,1fr)_108px_88px_28px]'
 const reviewColumns = 'lg:grid-cols-[minmax(250px,1fr)_minmax(0,1fr)_minmax(0,1fr)_90px]'
 const AUTO_SAVE_KEY = 'trading-plan-auto-save'
 
@@ -43,7 +43,14 @@ function validDate(value: string | null): value is string {
 
 function draftOf(plan: TradingPlan): TradingPlanDraft {
   const { schema_version: _schema, date: _date, updated_at: _updated, overall_score: _score, ...draft } = plan
-  return draft
+  return { ...draft, holdings: draft.holdings.map(holding => ({
+    ...holding, tomorrow_plan: holding.tomorrow_plan ?? '', plan_followed: holding.plan_followed ?? null,
+    stop_loss: numericStopLoss(holding.stop_loss) ? Number(holding.stop_loss).toFixed(2) : holding.stop_loss,
+  })) }
+}
+
+function numericStopLoss(value: string) {
+  return value.trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0
 }
 
 function isTextEntry(target: EventTarget | null) {
@@ -52,8 +59,8 @@ function isTextEntry(target: EventTarget | null) {
 }
 
 function PriceCell({ label, price, status, date, title, valueClassName }: { label: string; price?: number | null; status: string; date?: string | null; title?: string; valueClassName?: string }) {
-  return <div aria-label={label} title={title} className="flex items-center justify-between gap-2 xl:block">
-    <span className="text-xs text-secondary xl:hidden">{label}</span>
+  return <div aria-label={label} title={title} className="flex items-center justify-between gap-2 2xl:block">
+    <span className="text-xs text-secondary 2xl:hidden">{label}</span>
     <div>
       <div className="flex flex-wrap items-center gap-x-1.5">
         <p className={`font-mono text-sm tabular-nums text-foreground ${valueClassName ?? ''}`}>{fmtAssetPrice(price, 'stock')}</p>
@@ -89,11 +96,11 @@ function Section({ title, action, extra, children }: { title: string; action?: R
   </section>
 }
 
-function YesNo({ label, displayLabel = label, value, onChange, hideLabel = false, dangerValue = false }: { label: string; displayLabel?: string; value: boolean | null; onChange: (value: boolean) => void; hideLabel?: boolean | 'xl'; dangerValue?: boolean }) {
+function YesNo({ label, displayLabel = label, value, onChange, hideLabel = false, dangerValue = false }: { label: string; displayLabel?: string; value: boolean | null; onChange: (value: boolean) => void; hideLabel?: boolean | '2xl'; dangerValue?: boolean }) {
   const name = useId()
   return <fieldset className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5" aria-label={label}>
     <legend className="sr-only">{label}</legend>
-    <span aria-hidden="true" className={`text-xs ${value === dangerValue ? 'font-semibold text-red-700 dark:text-red-300' : 'text-secondary'} ${hideLabel === 'xl' ? 'xl:hidden' : hideLabel ? 'lg:hidden' : ''}`}>{displayLabel}</span>
+    <span aria-hidden="true" className={`text-xs ${value === dangerValue ? 'font-semibold text-red-700 dark:text-red-300' : 'text-secondary'} ${hideLabel === '2xl' ? '2xl:hidden' : hideLabel ? 'lg:hidden' : ''}`}>{displayLabel}</span>
     <div className="flex shrink-0 gap-1.5">
       {[true, false].map(answer => <label key={String(answer)} className={`inline-flex h-7 cursor-pointer items-center gap-1.5 rounded border px-2 text-xs transition-colors ${answer === dangerValue && value === answer
         ? 'border-danger bg-danger/15 font-bold text-red-700 ring-1 ring-danger dark:text-red-300'
@@ -105,10 +112,25 @@ function YesNo({ label, displayLabel = label, value, onChange, hideLabel = false
   </fieldset>
 }
 
-function TextField({ label, value, onChange, placeholder, hideLabel = false }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; hideLabel?: boolean | 'xl' }) {
+function TextField({ label, value, onChange, placeholder, hideLabel = false }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; hideLabel?: boolean | '2xl' }) {
   return <label className="block min-w-0 space-y-1 text-xs text-secondary">
-    <span className={hideLabel === 'xl' ? 'xl:sr-only' : hideLabel ? 'lg:sr-only' : ''}>{label}</span>
+    <span className={hideLabel === '2xl' ? '2xl:sr-only' : hideLabel ? 'lg:sr-only' : ''}>{label}</span>
     <textarea aria-label={label} value={value} onChange={e => onChange(e.target.value)} maxLength={5000} rows={1} placeholder={placeholder} className={`${inputClass} block min-h-8 resize-y`} />
+  </label>
+}
+
+function StopLossField({ name, value, onChange }: { name: string; value: string; onChange: (value: string) => void }) {
+  const legacyId = useId()
+  const legacyNote = value !== '' && !numericStopLoss(value)
+  return <label className="block min-w-0 space-y-1 text-xs text-secondary">
+    <span className="block 2xl:sr-only">{name} · 止损线</span>
+    <input aria-label={`${name} · 止损线`} type="number" inputMode="decimal" min="0" step="0.01"
+      value={legacyNote ? '' : value} placeholder="止损价" aria-describedby={legacyNote ? legacyId : undefined}
+      title="同步时更新为5日均线价格，可手动修改" className={`${inputClass} block max-w-[96px] font-mono tabular-nums`}
+      onChange={event => onChange(event.target.value)} onBlur={event => {
+        if (numericStopLoss(event.target.value)) onChange(Number(event.target.value).toFixed(2))
+      }} />
+    {legacyNote && <span id={legacyId} className="block break-words leading-4 text-amber-700 dark:text-amber-300">原止损说明：{value}</span>}
   </label>
 }
 
@@ -152,7 +174,7 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
   const dirty = JSON.stringify(draft) !== JSON.stringify(draftOf(initial))
   const negativeCount = [draft.market_above_ma5, draft.matches_mode,
     draft.holding_execution_followed, draft.target_stocks_followed,
-    ...draft.holdings.flatMap(holding => [holding.above_ma5, holding.above_ma10, holding.above_ma20]),
+    ...draft.holdings.flatMap(holding => [holding.above_ma5, holding.above_ma10, holding.above_ma20, holding.plan_followed]),
     draft.execution_review.answer,
   ].filter(answer => answer === false).length
     + [draft.ma5_review.answer, draft.ma20_review.answer].filter(answer => answer === true).length
@@ -187,7 +209,8 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
         const row = bySymbol.get(holding.symbol)
         if (!row) return holding
         return { ...holding, above_ma5: row.above_ma5 ?? holding.above_ma5,
-          above_ma10: row.above_ma10 ?? holding.above_ma10, above_ma20: row.above_ma20 ?? holding.above_ma20 }
+          above_ma10: row.above_ma10 ?? holding.above_ma10, above_ma20: row.above_ma20 ?? holding.above_ma20,
+          stop_loss: row.ma5_price != null && Number.isFinite(row.ma5_price) && row.ma5_price > 0 ? row.ma5_price.toFixed(2) : holding.stop_loss }
       }) }))
     },
   })
@@ -205,7 +228,8 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
     onSuccess: ({ sourceDate, total, additions }) => {
       if (additions.length > 0) {
         setDraft(current => ({ ...current, holdings: [...current.holdings, ...additions.map(({ symbol, name, reason, stop_loss }) => ({
-          symbol, name, reason, stop_loss, above_ma5: null, above_ma10: null, above_ma20: null,
+          symbol, name, reason, stop_loss: numericStopLoss(stop_loss) ? Number(stop_loss).toFixed(2) : stop_loss,
+          above_ma5: null, above_ma10: null, above_ma20: null, tomorrow_plan: '', plan_followed: null,
         }))] }))
       }
       setFeedback(total === 0 ? `${sourceDate} 没有可导入的持仓标的，请选择其他日期。`
@@ -280,7 +304,7 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
         </div>
       </Section>
       <Section title={`持仓标的 · ${draft.holdings.length} 只`} action={<>
-        <button type="button" className={`${buttonClass} h-7 border-accent/40 text-accent`} disabled={pending || initial.date !== today() || symbols.length === 0} title="同步当天最新行情并回填5/10/20日线选项，随后请保存计划" onClick={() => sync.mutate()}>
+        <button type="button" className={`${buttonClass} h-7 border-accent/40 text-accent`} disabled={pending || initial.date !== today() || symbols.length === 0} title="同步当天最新行情和5/10/20日线选项，并将止损线更新为5日均线价格；更新后可手动修改" onClick={() => sync.mutate()}>
           <RefreshCw aria-hidden="true" className={`h-3.5 w-3.5 ${sync.isPending ? 'animate-spin' : ''}`} />{sync.isPending ? '同步中…' : '同步'}
         </button>
         {initial.date !== today() && <span className="text-xs text-muted">仅当天可同步</span>}
@@ -294,18 +318,18 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
         <StockFinancialSearch compact ariaLabel="添加持仓标的" assetTypes="stock" onSelect={(symbol, name) => {
           if (draft.holdings.some(holding => holding.symbol === symbol)) { setFeedback(`${name}已在持仓标的中`); return }
           if (draft.holdings.length >= 100) { setFeedback('最多添加100只持仓标的'); return }
-          update('holdings', [...draft.holdings, { symbol, name, above_ma5: null, above_ma10: null, above_ma20: null, reason: '', stop_loss: '' }])
+          update('holdings', [...draft.holdings, { symbol, name, above_ma5: null, above_ma10: null, above_ma20: null, reason: '', tomorrow_plan: '', plan_followed: null, stop_loss: '' }])
           setFeedback(`已添加${name}`)
         }} />
       </>}>
         {importHoldings.isError && <p role="alert" className="mb-2 text-xs text-danger">导入失败：{importHoldings.error.message}。原有填写内容已保留，可重新选择日期或重试。</p>}
         {sync.isError && <p role="alert" className="mb-2 text-xs text-danger">同步失败：{sync.error.message}。原有填写内容已保留，可重试。</p>}
         {sync.isSuccess && <div role="status" aria-label="持仓同步结果" className="mb-2 space-y-1 text-xs">
-          <p className="text-accent">已更新 {sync.data.rows.filter(row => row.price !== null).length} 只股票当天价格，回填 {sync.data.rows.reduce((count, row) => count + [row.above_ma5, row.above_ma10, row.above_ma20].filter(value => value !== null).length, 0)} 项均线判断。请保存计划。</p>
+          <p className="text-accent">已更新 {sync.data.rows.filter(row => row.price !== null).length} 只股票当天价格，回填 {sync.data.rows.reduce((count, row) => count + [row.above_ma5, row.above_ma10, row.above_ma20].filter(value => value !== null).length, 0)} 项均线判断，{sync.data.rows.filter(row => row.ma5_price != null).length} 只止损线已更新为5日均线，可手动修改。{autoSaveEnabled ? '将自动保存。' : '请保存计划。'}</p>
           {sync.data.rows.filter(row => row.issues.length > 0).map(row => <p key={row.symbol} className="text-red-700 dark:text-red-300">{draft.holdings.find(holding => holding.symbol === row.symbol)?.name ?? row.symbol}：{row.issues.join('；')}</p>)}
         </div>}
-        {draft.holdings.length > 0 && <div aria-hidden="true" className={`hidden items-center gap-3 border-b border-border/60 pb-1.5 text-xs text-muted xl:grid ${holdingColumns}`}>
-          <span>股票 / 代码</span><span>计划当日价</span><span>当前价格</span><span>在5天线上</span><span>在10天线上</span><span>在20天线上</span><span>持仓理由</span><span>止损线</span><span />
+        {draft.holdings.length > 0 && <div aria-hidden="true" className={`hidden items-center gap-2 border-b border-border/60 pb-1.5 text-xs text-muted 2xl:grid ${holdingColumns}`}>
+          <span>股票 / 代码</span><span>计划当日价</span><span>当前价格</span><span>在5天线上</span><span>在10天线上</span><span>在20天线上</span><span>持仓理由</span><span>明日计划</span><span>是否执行计划</span><span>止损线</span><span />
         </div>}
         {draft.holdings.map(holding => {
           const holdingTextColor = holding.above_ma10 === false && holding.above_ma20 === false
@@ -316,7 +340,7 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
           const priceClassName = holding.above_ma10 === false || holding.above_ma20 === false
             ? `font-bold ${holdingTextColor}`
             : 'font-medium text-foreground'
-          return <div key={holding.symbol} className={`grid min-w-0 items-center gap-2 border-b border-border/40 py-2 last:border-0 lg:gap-3 ${holdingColumns}`}>
+          return <div key={holding.symbol} className={`grid min-w-0 items-center gap-2 border-b border-border/40 py-2 last:border-0 ${holdingColumns}`}>
           <button type="button" aria-label={`查看${holding.name} ${holding.symbol}详情`} title="打开股票详情" className="group min-w-0 rounded-btn text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => {
             if (!openStockPreview({ symbol: holding.symbol, name: holding.name, navList: draft.holdings.map(({ symbol, name }) => ({ symbol, name })) })) {
               toast('股票详情面板暂不可用，请刷新页面重试', 'error')
@@ -329,10 +353,12 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
           <HoldingPrice quote={quoteBySymbol.get(holding.symbol)} loading={quotes.isPending} error={quotes.isError} valueClassName={priceClassName} />
           {([5, 10, 20] as const).map(days => {
             const key = `above_ma${days}` as const
-            return <YesNo key={days} hideLabel="xl" label={`${holding.name}是否在${days}天线上`} value={holding[key]} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, [key]: value } : h))} />
+            return <YesNo key={days} hideLabel="2xl" label={`${holding.name}是否在${days}天线上`} value={holding[key]} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, [key]: value } : h))} />
           })}
-          <TextField hideLabel="xl" label={`${holding.name} · 持仓理由`} value={holding.reason} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, reason: value } : h))} placeholder="填写持仓逻辑" />
-          <TextField hideLabel="xl" label={`${holding.name} · 止损线`} value={holding.stop_loss} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, stop_loss: value } : h))} placeholder="止损价格或触发条件" />
+          <TextField hideLabel="2xl" label={`${holding.name} · 持仓理由`} value={holding.reason} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, reason: value } : h))} placeholder="填写持仓逻辑" />
+          <TextField hideLabel="2xl" label={`${holding.name} · 明日计划`} value={holding.tomorrow_plan} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, tomorrow_plan: value } : h))} placeholder="填写明日操作安排" />
+          <YesNo hideLabel="2xl" label={`${holding.name} · 是否执行计划`} displayLabel="是否执行计划" value={holding.plan_followed} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, plan_followed: value } : h))} />
+          <StopLossField name={holding.name} value={holding.stop_loss} onChange={value => update('holdings', draft.holdings.map(h => h.symbol === holding.symbol ? { ...h, stop_loss: value } : h))} />
           <button type="button" aria-label={`移除${holding.name}`} className="h-7 w-7 rounded-btn text-muted hover:bg-danger/10 hover:text-danger focus-visible:ring-2 focus-visible:ring-accent" onClick={() => { update('holdings', draft.holdings.filter(h => h.symbol !== holding.symbol)); setFeedback(`已移除${holding.name}`) }}>
             <Trash2 aria-hidden="true" className="mx-auto h-4 w-4" />
           </button>
@@ -340,7 +366,7 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
         })}
         {isHistorical && dayPrices.isError && symbols.length > 0 && <p role="alert" className="mt-1 text-xs text-danger">计划当日价格加载失败。<button type="button" className="ml-2 underline" onClick={() => void dayPrices.refetch()}>重试当日价格</button></p>}
         {quotes.isError && symbols.length > 0 && <p role="alert" className="mt-1 text-xs text-danger">行情加载失败{quotes.data ? '，已保留最近有效价格' : '，可继续填写计划'}。<button type="button" className="ml-2 underline" onClick={() => void quotes.refetch()}>重试行情</button></p>}
-        <p role="status" className={feedback ? 'mt-1 text-xs text-accent' : draft.holdings.length === 0 ? 'py-3 text-center text-xs text-muted' : 'sr-only'}>{feedback || (draft.holdings.length === 0 ? '尚未添加持仓标的。' : '逐只填写均线状态、持仓理由与止损线。')}</p>
+        <p role="status" className={feedback ? 'mt-1 text-xs text-accent' : draft.holdings.length === 0 ? 'py-3 text-center text-xs text-muted' : 'sr-only'}>{feedback || (draft.holdings.length === 0 ? '尚未添加持仓标的。' : '逐只填写均线状态、持仓理由、明日计划、执行情况与止损线。')}</p>
       </Section>
       <Section title="操作评分" extra={<div className="flex items-center gap-3 text-xs" role="status">
         <span className="text-muted">{overall ? '三项平均 · 满分10分' : `已完成 ${scores.filter(v => v !== null).length}/3 项评分`}</span>
@@ -407,7 +433,7 @@ export function TradingPlanPage() {
           <span className="whitespace-nowrap text-xs font-bold tracking-widest">交易铁律</span>
         </div>
         <p className="min-w-0 leading-6">
-          <span className="block text-sm font-semibold text-red-800 dark:text-red-200">亏钱如烧纸，赚钱如吃屎。</span>
+          <span className="block text-sm font-semibold text-red-800 dark:text-red-200">亏钱如烧纸，<strong className="trading-plan-profit-emphasis">赚钱</strong>如吃屎。</span>
           <strong className="block text-base font-extrabold tracking-wide text-red-700 dark:text-red-300 sm:text-lg">保住本金，才是王道。</strong>
         </p>
       </aside>
@@ -442,7 +468,7 @@ export function TradingPlanPage() {
           </button>
         </div>
     } />
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="relative min-h-0 flex-1 overflow-y-auto">
       <div className="space-y-3 px-4 py-3">
         {plan.isFetching || plan.isPending ? <div role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-muted"><Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在加载 {day} 的计划…</div>
           : plan.isError ? <div role="alert" className="rounded-card border border-danger/30 p-5 text-sm text-danger">计划加载失败：{plan.error.message}<button type="button" className={`${buttonClass} ml-3`} onClick={() => void plan.refetch()}>重试</button></div>
