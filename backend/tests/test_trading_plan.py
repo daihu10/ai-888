@@ -25,6 +25,57 @@ def client(tmp_path, monkeypatch):
     return TestClient(app)
 
 
+@pytest.mark.parametrize("verdict", [True, False, None])
+def test_calendar_includes_today_without_regime_record_only_when_confirmed(client, monkeypatch, verdict):
+    from app.services import data_integrity, regime_builder, trading_day
+
+    monkeypatch.setattr(plans, "cn_now", lambda: datetime(2026, 11, 23, 9, 0, tzinfo=CN_TZ))
+    monkeypatch.setattr(regime_builder, "load_regime_history", lambda _: pl.DataFrame({"date": [date(2026, 11, 20)]}))
+    monkeypatch.setattr(data_integrity, "_trading_calendar", lambda: None)
+    monkeypatch.setattr(trading_day, "is_trading_day", lambda _: verdict)
+    response = client.get("/api/custom/trading-plan/calendar?year=2026")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["dates"] == (["2026-11-20", "2026-11-23"] if verdict else ["2026-11-20"])
+    assert result["today_is_trading"] is verdict
+    assert result["previous"] == "2026-11-20"
+    assert result["latest"] == ("2026-11-23" if verdict else "2026-11-20")
+
+
+def test_calendar_skips_holidays_future_dates_and_keeps_previous_year_navigation(client, monkeypatch):
+    from app.services import data_integrity, regime_builder, trading_day
+
+    monkeypatch.setattr(plans, "cn_now", lambda: datetime(2027, 1, 4, 10, 0, tzinfo=CN_TZ))
+    monkeypatch.setattr(regime_builder, "load_regime_history", lambda _: pl.DataFrame())
+    monkeypatch.setattr(data_integrity, "_trading_calendar", lambda: {
+        date(2026, 12, 31), date(2027, 1, 4), date(2027, 1, 5), date(2027, 2, 1),
+    })
+    monkeypatch.setattr(trading_day, "is_trading_day", lambda _: True)
+    result = client.get("/api/custom/trading-plan/calendar?year=2027").json()
+    assert result["dates"] == ["2027-01-04"]
+    assert result["previous"] == "2026-12-31"
+    assert result["latest"] == "2027-01-04"
+    assert client.get("/api/custom/trading-plan/calendar?year=2026").json()["dates"] == ["2026-12-31"]
+    assert client.get("/api/custom/trading-plan/calendar?year=2028").json()["dates"] == []
+
+
+def test_calendar_weekend_empty_and_unavailable(client, monkeypatch):
+    from app.services import data_integrity, regime_builder, trading_day
+
+    monkeypatch.setattr(plans, "cn_now", lambda: datetime(2026, 11, 22, 10, 0, tzinfo=CN_TZ))
+    monkeypatch.setattr(regime_builder, "load_regime_history", lambda _: pl.DataFrame())
+    monkeypatch.setattr(data_integrity, "_trading_calendar", lambda: None)
+    monkeypatch.setattr(trading_day, "is_trading_day", lambda _: False)
+    result = client.get("/api/custom/trading-plan/calendar?year=2026").json()
+    assert result["dates"] == []
+    assert result["previous"] is None
+    assert result["latest"] is None
+    assert result["today_is_trading"] is False
+    assert client.get("/api/custom/trading-plan/calendar?year=0").status_code == 422
+    monkeypatch.setattr(plans, "plan_calendar", Mock(side_effect=OSError()))
+    assert client.get("/api/custom/trading-plan/calendar?year=2026").status_code == 503
+
+
 def test_daily_roundtrip_and_average(client):
     url = "/api/custom/trading-plan/2026-11-19"
     empty = client.get(url).json()

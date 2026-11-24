@@ -30,6 +30,7 @@ export const EXT_DATA_QUERY_PREFIXES = new Set([
 export const QK = {
   tradingPlanDates: ['trading-plan-dates'] as const,
   tradingPlanScores: (year: number) => ['trading-plan-scores', year] as const,
+  tradingPlanCalendar: (year: number, today: string) => ['trading-plan-calendar', year, today] as const,
   tradingPlanQuotes: (symbols: readonly string[]) => ['trading-plan-quotes', [...new Set(symbols)].sort().join(',')] as const,
   tradingPlanPrices: (date: string, symbols: readonly string[]) => ['trading-plan-prices', date, [...new Set(symbols)].sort().join(',')] as const,
   tradingPlan: (date: string) => ['trading-plan', date] as const,

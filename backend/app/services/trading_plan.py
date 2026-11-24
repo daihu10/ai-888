@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, computed_fie
 
 from app.config import settings
 from app.data_providers.capabilities import capability_gate
-from app.market_time import cn_today
+from app.market_time import cn_now, cn_today
 from app.services.fs_utils import atomic_write_text
 
 _LOCK = threading.RLock()
@@ -25,6 +25,33 @@ Score = Annotated[int, Field(strict=True, ge=1, le=10)]
 Count = Annotated[int, Field(strict=True, ge=0, le=10000)]
 Note = Annotated[str, Field(max_length=5000)]
 Answer = Annotated[bool, Field(strict=True)]
+
+
+def plan_calendar(year: int) -> dict:
+    """Reuse known market dates and the shared calendar; today's probe is independent of regime computation."""
+    from app.services import regime_builder, trading_day
+    from app.services.data_integrity import _trading_calendar
+
+    now = cn_now()
+    today = now.date()
+    history = regime_builder.load_regime_history(settings.data_dir)
+    known = set(history.get_column("date").to_list()) if not history.is_empty() else set()
+    calendar = _trading_calendar()
+    if calendar:
+        known.update(calendar)
+    verdict = trading_day.is_trading_day(now)
+    if verdict is True:
+        known.add(today)
+    elif verdict is False:
+        known.discard(today)
+    # Do not manufacture weekdays when the calendar capability is unavailable.
+    days = sorted(day for day in known if day <= today and day.weekday() < 5)
+    previous = next((day for day in reversed(days) if day < today), None)
+    return {
+        "year": year, "today": today, "today_is_trading": True if today in days else verdict,
+        "dates": [day for day in days if day.year == year],
+        "previous": previous, "latest": days[-1] if days else None,
+    }
 
 
 class PlanConflictError(ValueError):

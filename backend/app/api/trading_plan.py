@@ -41,6 +41,11 @@ def plan_scores(year: int = Query(ge=1, le=9999)):
     return {"year": year, "rows": _call(service.list_scores, year)}
 
 
+@router.get("/calendar")
+def plan_calendar(year: int = Query(ge=1, le=9999)):
+    return _call(service.plan_calendar, year)
+
+
 def _selected_symbols(symbols: str) -> list[str]:
     selected = list(dict.fromkeys(symbols.split(",")))
     if len(selected) > 100 or any(

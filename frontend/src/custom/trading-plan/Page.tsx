@@ -11,6 +11,7 @@ import { DatePicker } from '@/components/DatePicker'
 import { StockFinancialSearch } from '@/components/financials/StockFinancialSearch'
 import { toast } from '@/components/Toast'
 import { ScoreCalendar } from './ScoreCalendar'
+import { today, useTradingCalendar } from './useTradingCalendar'
 
 const inputClass = 'w-full min-w-0 rounded-btn border border-border/70 bg-base px-2 py-1.5 text-xs leading-4 text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40'
 const buttonClass = 'inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-btn border border-border px-2.5 text-xs transition-colors hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50'
@@ -18,16 +19,11 @@ const holdingColumns = 'sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[100px_repea
 const reviewColumns = 'lg:grid-cols-[minmax(250px,1fr)_minmax(0,1fr)_minmax(0,1fr)_90px]'
 const AUTO_SAVE_KEY = 'trading-plan-auto-save'
 
-function today() {
-  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-}
-
-function defaultPlanDate() {
+function defaultPlanDate(previous: string | null, latest: string | null) {
   const shanghaiTime = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).format(new Date())
-  const currentDay = today()
-  return shanghaiTime >= '15:10' ? currentDay : previousDay(currentDay)
+  return shanghaiTime >= '15:10' ? latest : previous
 }
 
 function previousDay(day: string) {
@@ -403,7 +399,14 @@ function PlanEditor({ initial, autoSaveEnabled, onDirty, onPending, onNegativeCo
 
 export function TradingPlanPage() {
   const [params, setParams] = useSearchParams()
-  const day = validDate(params.get('date')) ? params.get('date')! : defaultPlanDate()
+  const calendar = useTradingCalendar(Number(today().slice(0, 4)))
+  const yesterday = calendar.data?.previous ?? null
+  const latest = calendar.data?.latest ?? null
+  const selectedDate = validDate(params.get('date')) ? params.get('date')! : defaultPlanDate(yesterday, latest)
+  const day = selectedDate ?? today()
+  useEffect(() => {
+    if (!validDate(params.get('date')) && selectedDate) setParams({ date: selectedDate }, { replace: true })
+  }, [params, selectedDate, setParams])
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
     try { return window.localStorage.getItem(AUTO_SAVE_KEY) !== 'false' } catch { return true }
   })
@@ -413,6 +416,7 @@ export function TradingPlanPage() {
   const dates = useQuery({ queryKey: QK.tradingPlanDates, queryFn: api.tradingPlanDates })
   const plan = useQuery({
     queryKey: QK.tradingPlan(day), queryFn: () => api.tradingPlan(day),
+    enabled: selectedDate !== null,
     staleTime: 0, refetchOnMount: 'always', refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false,
   })
   useEffect(() => {
@@ -452,8 +456,8 @@ export function TradingPlanPage() {
             </span>
           </button>
           <DatePicker ariaLabel="计划日期" value={day} onChange={changeDate} disabled={pending} buttonClassName="h-8" />
-          <button type="button" aria-pressed={day === previousDay(today())} className={`${buttonClass} ${day === previousDay(today()) ? 'border-accent bg-accent/10 font-semibold text-accent ring-1 ring-accent/40 disabled:opacity-100' : ''}`} disabled={pending || day === previousDay(today())} onClick={() => changeDate(previousDay(today()))}>昨天</button>
-          <button type="button" aria-pressed={day === today()} className={`${buttonClass} ${day === today() ? 'border-accent bg-accent/10 font-semibold text-accent ring-1 ring-accent/40 disabled:opacity-100' : ''}`} disabled={pending || day === today()} onClick={() => changeDate(today())}>今天</button>
+          <button type="button" title={yesterday ? `上一交易日：${yesterday}` : '暂无上一交易日'} aria-pressed={day === yesterday} className={`${buttonClass} ${day === yesterday ? 'border-accent bg-accent/10 font-semibold text-accent ring-1 ring-accent/40 disabled:opacity-100' : ''}`} disabled={pending || !yesterday || day === yesterday} onClick={() => yesterday && changeDate(yesterday)}>昨天</button>
+          <button type="button" title={latest ? `最近交易日：${latest}` : '暂无交易日'} aria-pressed={day === latest && latest !== yesterday} className={`${buttonClass} ${day === latest && latest !== yesterday ? 'border-accent bg-accent/10 font-semibold text-accent ring-1 ring-accent/40 disabled:opacity-100' : ''}`} disabled={pending || !latest || day === latest} onClick={() => latest && changeDate(latest)}>今天</button>
           <label className="min-w-0">
             <span className="sr-only">历史计划</span>
             <select aria-label="历史计划" value={dates.data?.dates.includes(day) ? day : ''} disabled={pending || !dates.data?.dates.length} onChange={e => changeDate(e.target.value)} className={`${inputClass} h-8 w-[120px]`}>
@@ -470,7 +474,8 @@ export function TradingPlanPage() {
     } />
     <div className="relative min-h-0 flex-1 overflow-y-auto">
       <div className="space-y-3 px-4 py-3">
-        {plan.isFetching || plan.isPending ? <div role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-muted"><Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在加载 {day} 的计划…</div>
+        {!selectedDate && !calendar.isPending ? <div role="alert" className="rounded-card border border-danger/30 p-5 text-sm text-danger">{calendar.isError ? `交易日历加载失败：${calendar.error.message}` : '暂无可用交易日，请选择计划日期或重试。'}<button type="button" className={`${buttonClass} ml-3`} onClick={() => void calendar.refetch()}>重试交易日历</button></div>
+          : plan.isFetching || plan.isPending ? <div role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-muted"><Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在加载 {day} 的计划…</div>
           : plan.isError ? <div role="alert" className="rounded-card border border-danger/30 p-5 text-sm text-danger">计划加载失败：{plan.error.message}<button type="button" className={`${buttonClass} ml-3`} onClick={() => void plan.refetch()}>重试</button></div>
             : <PlanEditor key={day} initial={plan.data} autoSaveEnabled={autoSaveEnabled} onDirty={setDirty} onPending={setPending} onNegativeCount={setNegativeCount} reload={() => { setDirty(false); setNegativeCount(0); void plan.refetch() }} />}
         <ScoreCalendar day={day} disabled={pending} onSelect={changeDate} />

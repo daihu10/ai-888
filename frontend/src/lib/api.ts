@@ -2884,6 +2884,7 @@ export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
 
   tradingPlanDates: () => request<{ dates: string[] }>('/api/custom/trading-plan'),
+  tradingPlanCalendar: (year: number) => request<{ year: number; today: string; today_is_trading: boolean | null; dates: string[]; previous: string | null; latest: string | null }>(`/api/custom/trading-plan/calendar?year=${year}`),
   tradingPlanScores: (year: number) => request<{ year: number; rows: TradingPlanScore[] }>(`/api/custom/trading-plan/scores?year=${year}`),
   tradingPlanQuotes: (symbols: readonly string[]) =>
     request<{ rows: TradingPlanQuote[] }>(`/api/custom/trading-plan/quotes?symbols=${encodeURIComponent(symbols.join(','))}`),

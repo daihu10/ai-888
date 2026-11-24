@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { TradingPlanPage } from './Page'
 import type { TradingPlan, TradingPlanDraft } from '@/lib/api'
 
-const mockApi = vi.hoisted(() => ({ tradingPlan: vi.fn(), tradingPlanDates: vi.fn(), tradingPlanScores: vi.fn(), saveTradingPlan: vi.fn(), tradingPlanQuotes: vi.fn(), tradingPlanPrices: vi.fn(), syncTradingPlan: vi.fn() }))
+const mockApi = vi.hoisted(() => ({ tradingPlanCalendar: vi.fn(), tradingPlan: vi.fn(), tradingPlanDates: vi.fn(), tradingPlanScores: vi.fn(), saveTradingPlan: vi.fn(), tradingPlanQuotes: vi.fn(), tradingPlanPrices: vi.fn(), syncTradingPlan: vi.fn() }))
 const openStockPreview = vi.hoisted(() => vi.fn(() => true))
 vi.mock('@/extensions/stockPreview', () => ({ openStockPreview }))
 vi.mock('@/lib/api', () => ({ api: mockApi }))
@@ -44,6 +44,12 @@ beforeEach(() => {
   window.localStorage.setItem('trading-plan-auto-save', 'false')
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-11-19T15:10:00+08:00'))
+  mockApi.tradingPlanCalendar.mockImplementation(async (year: number) => {
+    const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date())
+    const previous = new Date(`${today}T00:00:00Z`)
+    previous.setUTCDate(previous.getUTCDate() - 1)
+    return { year, today, today_is_trading: true, latest: today, previous: previous.toISOString().slice(0, 10), dates: ['2026-11-18', '2026-11-19'] }
+  })
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   mockApi.tradingPlan.mockImplementation(async (day: string) => empty(day))
   mockApi.tradingPlanDates.mockResolvedValue({ dates: [] })
@@ -67,6 +73,9 @@ async function flush() { await act(async () => { await new Promise(resolve => se
 async function render(day?: string) {
   const entry = day ? `/trading-plan?date=${day}` : '/trading-plan'
   await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[entry]}><TradingPlanPage /></MemoryRouter></QueryClientProvider>))
+  await flush()
+  // Calendar resolution enables the plan request, which can in turn request prices.
+  await flush()
   await flush()
 }
 function button(text: string) { return [...container.querySelectorAll('button')].find(b => b.textContent === text)! }
@@ -400,6 +409,41 @@ it('defaults to and highlights today starting at 15:10 Beijing time', async () =
   expect(button('今天').getAttribute('aria-pressed')).toBe('true')
   expect(button('今天').className).toContain('ring-accent/40')
   expect(button('昨天').getAttribute('aria-pressed')).toBe('false')
+})
+
+it.each(['2026-11-23T09:00:00+08:00', '2026-11-23T15:10:00+08:00'])(
+  'uses actual trading dates around the Monday cutoff: %s', async timestamp => {
+    vi.setSystemTime(new Date(timestamp))
+    mockApi.tradingPlanCalendar.mockResolvedValue({ year: 2026, today: '2026-11-23', today_is_trading: true,
+      dates: ['2026-11-20', '2026-11-23'], previous: '2026-11-20', latest: '2026-11-23' })
+    await render()
+    const expected = timestamp.includes('09:00') ? '2026-11-20' : '2026-11-23'
+    expect(mockApi.tradingPlan).toHaveBeenLastCalledWith(expected)
+    expect(mockApi.tradingPlan).not.toHaveBeenCalledWith('2026-11-22')
+    expect(button(expected === '2026-11-20' ? '昨天' : '今天').getAttribute('aria-pressed')).toBe('true')
+    await click(button(expected === '2026-11-20' ? '今天' : '昨天'))
+    expect(mockApi.tradingPlan).toHaveBeenLastCalledWith(expected === '2026-11-20' ? '2026-11-23' : '2026-11-20')
+  },
+)
+
+it('uses the latest trading day over a holiday with only one highlighted shortcut', async () => {
+  vi.setSystemTime(new Date('2026-10-07T16:00:00+08:00'))
+  mockApi.tradingPlanCalendar.mockResolvedValue({ year: 2026, today: '2026-10-07', today_is_trading: false,
+    dates: ['2026-09-30'], previous: '2026-09-30', latest: '2026-09-30' })
+  await render()
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-09-30')
+  expect(button('昨天').getAttribute('aria-pressed')).toBe('true')
+  expect(button('今天').getAttribute('aria-pressed')).toBe('false')
+  expect(button('昨天').title).toContain('2026-09-30')
+})
+
+it('does not guess a default date when the calendar fails, and recovers on retry', async () => {
+  mockApi.tradingPlanCalendar.mockRejectedValueOnce(new Error('日历不可用'))
+  await render()
+  expect(mockApi.tradingPlan).not.toHaveBeenCalled()
+  expect(container.textContent).toContain('交易日历加载失败')
+  await click(button('重试交易日历'))
+  expect(mockApi.tradingPlan).toHaveBeenLastCalledWith('2026-11-19')
 })
 
 it('saves market sentiment selections per date without adding mode warnings', async () => {

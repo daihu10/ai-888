@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CalendarDays, ChevronLeft, ChevronRight, LayoutGrid, Rows3 } from 'lucide-react'
 import { api, type TradingPlanScore } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { today, useTradingCalendar } from './useTradingCalendar'
 
 const control = 'inline-flex h-7 items-center justify-center gap-1 rounded-btn border border-border px-2 text-xs text-secondary hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40'
 const levels = [
@@ -33,15 +34,30 @@ export function ScoreCalendar({ day, disabled, onSelect }: { day: string; disabl
   const scores = useQuery({
     queryKey: QK.tradingPlanScores(year), queryFn: () => api.tradingPlanScores(year), staleTime: 60_000,
   })
+  const yearText = String(year).padStart(4, '0')
+  const yearStart = `${yearText}-01-01`
+  const marketDates = useTradingCalendar(year)
   const rows = new Map(scores.data?.rows.map(row => [row.date, row]))
-  const focusDate = day.startsWith(`${year.toString().padStart(4, '0')}-`) ? day : `${year.toString().padStart(4, '0')}-01-01`
+  const tradingDates = useMemo(() => new Set(marketDates.data?.dates.filter(date => date <= today()) ?? []), [marketDates.data])
+  const tradingMonths = useMemo(() => new Set([...tradingDates].map(date => date.slice(0, 7))), [tradingDates])
+  const focusDate = useMemo(() => {
+    const requested = day.startsWith(`${yearText}-`) ? day : yearStart
+    if (tradingDates.has(requested)) return requested
+    const cursor = new Date(`${requested}T00:00:00Z`)
+    for (let offset = 1; offset <= 366; offset += 1) {
+      cursor.setUTCDate(cursor.getUTCDate() - 1)
+      const previous = cursor.toISOString().slice(0, 10)
+      if (previous.startsWith(`${yearText}-`) && tradingDates.has(previous)) return previous
+    }
+    return [...tradingDates][0] ?? requested
+  }, [day, tradingDates, yearStart, yearText])
   useEffect(() => { setYear(selectedYear); setInspected(null) }, [selectedYear])
   useEffect(() => { setTabStop(null); setInspected(null) }, [day, year])
   useEffect(() => {
     if (expanded || !scrollRef.current) return
     const scroll = scrollRef.current
     const alignMonth = () => {
-      const month = monthRefs.current[year === selectedYear ? Number(day.slice(5, 7)) - 1 : 11]
+      const month = monthRefs.current[year === selectedYear ? Number(day.slice(5, 7)) - 1 : 11] ?? monthRefs.current.filter(Boolean).at(-1)
       if (month) scroll.scrollLeft = Math.max(0, month.offsetLeft - (scroll.clientWidth - month.clientWidth) / 2)
     }
     alignMonth()
@@ -49,15 +65,21 @@ export function ScoreCalendar({ day, disabled, onSelect }: { day: string; disabl
     const observer = new ResizeObserver(alignMonth)
     observer.observe(scroll)
     return () => observer.disconnect()
-  }, [day, year, selectedYear, expanded, scores.isPending])
+  }, [day, year, selectedYear, expanded, scores.isPending, marketDates.data])
   function moveFocus(date: string, key: string) {
     const delta = ({ ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 } as Record<string, number>)[key]
     if (delta === undefined) return false
+    const direction = delta < 0 ? -1 : 1
     const next = new Date(`${date}T00:00:00Z`)
-    next.setUTCDate(next.getUTCDate() + delta)
-    if (next.getUTCFullYear() !== year) return true
-    const nextDate = next.toISOString().slice(0, 10)
-    dayRefs.current.get(nextDate)?.focus()
+    for (let steps = 0; steps < 370; steps += 1) {
+      next.setUTCDate(next.getUTCDate() + (steps === 0 ? delta : direction))
+      if (next.getUTCFullYear() !== year) return true
+      const nextDate = next.toISOString().slice(0, 10)
+      if (tradingDates.has(nextDate)) {
+        dayRefs.current.get(nextDate)?.focus()
+        return true
+      }
+    }
     return true
   }
   return <section aria-label="交易评分日历" className="min-w-0 rounded-card border border-border bg-surface/70 p-3">
@@ -66,7 +88,7 @@ export function ScoreCalendar({ day, disabled, onSelect }: { day: string; disabl
       <div className="flex flex-wrap items-center gap-1.5">
         <button type="button" className={control} aria-label="评分日历上一年" disabled={disabled || year <= 1} onClick={() => { setYear(year - 1); setInspected(null) }}><ChevronLeft aria-hidden="true" className="h-3.5 w-3.5" /></button>
         <span className="min-w-12 text-center font-mono text-xs text-foreground">{year}年</span>
-        <button type="button" className={control} aria-label="评分日历下一年" disabled={disabled || year >= 9999} onClick={() => { setYear(year + 1); setInspected(null) }}><ChevronRight aria-hidden="true" className="h-3.5 w-3.5" /></button>
+        <button type="button" className={control} aria-label="评分日历下一年" disabled={disabled || year >= Number(today().slice(0, 4))} onClick={() => { setYear(year + 1); setInspected(null) }}><ChevronRight aria-hidden="true" className="h-3.5 w-3.5" /></button>
         <button type="button" className={control} aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(!expanded)}>
           {expanded ? <Rows3 aria-hidden="true" className="h-3.5 w-3.5" /> : <LayoutGrid aria-hidden="true" className="h-3.5 w-3.5" />}{expanded ? '收起月份' : '展开全部月份'}
         </button>
@@ -75,12 +97,13 @@ export function ScoreCalendar({ day, disabled, onSelect }: { day: string; disabl
     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-secondary" aria-label="评分颜色图例">
       {levels.map(level => <span key={level.label} className="inline-flex items-center gap-1.5"><span aria-hidden="true" className={`h-3 w-3 rounded-sm ${level.color}`} />{level.range} {level.label}</span>)}
     </div>
-    {scores.isPending ? <p role="status" className="py-10 text-center text-xs text-muted">正在加载 {year} 年评分…</p>
+    {scores.isPending || marketDates.isPending ? <p role="status" className="py-10 text-center text-xs text-muted">正在加载 {year} 年交易日历…</p>
       : scores.isError ? <p role="alert" className="py-6 text-xs text-danger">评分加载失败：{scores.error.message}<button type="button" className={`${control} ml-2`} onClick={() => void scores.refetch()}>重试评分</button></p>
+        : marketDates.isError ? <p role="alert" className="py-6 text-xs text-danger">交易日历加载失败：{marketDates.error.message}<button type="button" className={`${control} ml-2`} onClick={() => void marketDates.refetch()}>重试交易日历</button></p>
+          : tradingDates.size === 0 ? <p role="status" className="py-6 text-center text-xs text-muted">暂无 {year} 年已确认的交易日数据。</p>
         : <>
           <div ref={scrollRef} id={id} className={`relative mt-3 flex gap-5 px-1 py-2 ${expanded ? 'flex-wrap' : 'overflow-x-auto'}`}>
-            {Array.from({ length: 12 }, (_, month) => {
-              const yearText = String(year).padStart(4, '0')
+            {Array.from({ length: 12 }, (_, month) => month).filter(month => tradingMonths.has(`${yearText}-${String(month + 1).padStart(2, '0')}`)).map(month => {
               // Explicit ISO dates avoid browser time zones and JS's special treatment of years 0–99.
               const first = new Date(`${yearText}-${String(month + 1).padStart(2, '0')}-01T00:00:00Z`)
               const next = new Date(first)
@@ -97,6 +120,7 @@ export function ScoreCalendar({ day, disabled, onSelect }: { day: string; disabl
                     const date = `${yearText}-${String(month + 1).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`
                     const row = rows.get(date)
                     const label = dayLabel(date, row)
+                    if (!tradingDates.has(date)) return <span key={date} aria-hidden="true" className="h-6 w-6" />
                     return <button key={date} type="button" ref={element => { if (element) dayRefs.current.set(date, element); else dayRefs.current.delete(date) }}
                       data-score-date={date} aria-label={label} title={label} aria-pressed={day === date} disabled={disabled}
                       tabIndex={date === (tabStop ?? focusDate) ? 0 : -1}
@@ -114,5 +138,6 @@ export function ScoreCalendar({ day, disabled, onSelect }: { day: string; disabl
           <p className="mt-2 text-xs leading-5 text-secondary">{dayLabel(inspected ?? focusDate, rows.get(inspected ?? focusDate))}。点击日期切换计划。</p>
           <p className="text-[11px] leading-5 text-muted">按已保存的三项平均分着色：≥9分为红色，≥5且＜9分为蓝色，＜5分为黄色；未完成评分或暂无计划为白色。</p>
         </>}
+    {year === Number(today().slice(0, 4)) && marketDates.data?.today_is_trading === null && <p role="status" className="mt-2 text-xs text-muted">今日交易日状态暂未确认，确认后自动补入日历。</p>}
   </section>
 }
